@@ -8,7 +8,7 @@ import os
 import logging
 from flask import Flask, request, jsonify
 from flask_cors import CORS
-from openai import OpenAI
+import openai
 
 # Configure logging
 logging.basicConfig(level=logging.INFO)
@@ -30,8 +30,8 @@ CORS(app, resources={
     }
 })
 
-# Initialize OpenAI client
-client = OpenAI(api_key=os.environ.get("OPENAI_API_KEY"))
+# Configure OpenAI API key (old style)
+openai.api_key = os.environ.get("OPENAI_API_KEY")
 
 # System prompt for Autoanosis health assistant
 SYSTEM_PROMPT = """Είσαι ο Autoanosis Assistant, ένας εξειδικευμένος βοηθός υγείας στα ελληνικά.
@@ -88,8 +88,8 @@ def chat():
         
         logger.info(f"Processing chat request: {user_message[:50]}...")
         
-        # Call OpenAI API
-        response = client.chat.completions.create(
+        # Call OpenAI API (old style - v0.28.1)
+        response = openai.ChatCompletion.create(
             model="gpt-4o-mini",
             messages=[
                 {"role": "system", "content": SYSTEM_PROMPT},
