@@ -17,6 +17,7 @@ from datetime import datetime
 from flask import Flask, request, jsonify, render_template_string
 from flask_cors import CORS
 import openai
+from identity import verify_identity_token, get_user_id_from_token
 
 # Configure logging
 logging.basicConfig(
@@ -304,16 +305,17 @@ def chat():
     if not user_message:
         return jsonify({"error": "No message provided"}), 400
 
-    # Get user_id from token (Token Bridge)
+    # Get user_id from identity_token (Token Bridge)
     user_id = None
-    token = data.get("token")
+    identity_token = data.get("identity_token")
     
-    if token:
-        try:
-            user_id = verify_token(token)
-            logger.info(f"User authenticated via token: {user_id}")
-        except ValueError as e:
-            logger.warning(f"Token verification failed: {e}")
+    if identity_token:
+        is_valid, payload, error = verify_identity_token(identity_token)
+        if is_valid and payload:
+            user_id = payload.get("uid")
+            logger.info(f"User authenticated via identity token: {user_id}")
+        else:
+            logger.warning(f"Identity token verification failed: {error}")
     
     user_ip = request.headers.get('X-Forwarded-For', request.remote_addr)
     if not check_rate_limit(user_ip):
