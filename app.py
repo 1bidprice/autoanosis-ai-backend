@@ -16,7 +16,7 @@ from collections import defaultdict
 from datetime import datetime
 from flask import Flask, request, jsonify, render_template_string
 from flask_cors import CORS
-import openai
+from openai import OpenAI
 from identity import verify_identity_token, get_user_id_from_token
 
 # Configure logging
@@ -42,8 +42,8 @@ CORS(app, resources={
     }
 })
 
-# Configure OpenAI API key (old style)
-openai.api_key = os.environ.get("OPENAI_API_KEY")
+# Configure OpenAI client (new style)
+openai_client = OpenAI(api_key=os.environ.get("OPENAI_API_KEY"))
 
 # WordPress Configuration
 WP_BASE_URL = "https://autoanosis.com/wp-json"
@@ -336,7 +336,7 @@ def chat():
         logger.info("No valid token provided - using guest mode")
 
     try:
-        response = openai.ChatCompletion.create(
+        response = openai_client.chat.completions.create(
             model="gpt-4",
             messages=[
                 {"role": "system", "content": system_prompt},
