@@ -56,7 +56,7 @@ WP_BASE_URL = "https://autoanosis.com/wp-json"
 WP_MEDICAL_API_KEY = os.environ.get("WP_MEDICAL_API_KEY", "xqx5eWXnPEaNoFZKfChDLVYYp4uBLt8L")
 
 # Token Bridge Configuration
-TOKEN_SECRET = os.environ.get("AUTOA_TOKEN_SECRET", "CHANGE_THIS_SECRET")
+TOKEN_SECRET = os.environ.get("AUTOANOSIS_IDENTITY_SECRET", "CHANGE_THIS_SECRET")
 
 # Rate limiting storage (in-memory for now)
 rate_limit_storage = defaultdict(list)
