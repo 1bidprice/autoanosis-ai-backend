@@ -42,8 +42,14 @@ CORS(app, resources={
     }
 })
 
-# Configure OpenAI client (new style)
-openai_client = OpenAI(api_key=os.environ.get("OPENAI_API_KEY"))
+# Configure OpenAI client (lazy initialization)
+openai_client = None
+
+def get_openai_client():
+    global openai_client
+    if openai_client is None:
+        openai_client = OpenAI(api_key=os.environ.get("OPENAI_API_KEY"))
+    return openai_client
 
 # WordPress Configuration
 WP_BASE_URL = "https://autoanosis.com/wp-json"
@@ -336,7 +342,8 @@ def chat():
         logger.info("No valid token provided - using guest mode")
 
     try:
-        response = openai_client.chat.completions.create(
+        client = get_openai_client()
+        response = client.chat.completions.create(
             model="gpt-4",
             messages=[
                 {"role": "system", "content": system_prompt},
