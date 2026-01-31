@@ -259,7 +259,7 @@ def chat():
         logger.info(f"Chat interaction: User={user_id}, Conversation={conversation_id}")
         
         return jsonify({
-            "response": ai_response,
+            "reply": ai_response,
             "conversation_id": conversation_id
         })
     except Exception as e:
