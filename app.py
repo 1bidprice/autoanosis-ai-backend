@@ -214,19 +214,34 @@ def chat():
         conversation_id = f"conv_{int(time.time())}_{uuid.uuid4().hex[:8]}"
         logger.info(f"Generated new conversation ID: {conversation_id}")
 
-    # Build system prompt
-    system_prompt = SYSTEM_PROMPT_BASE
+    # Build system prompt with MANDATORY medical snapshot usage
+    snapshot = data.get("medical_snapshot") or data.get("snapshot")
     
-    # Add medical context if available
-    medical_snapshot = data.get("medical_snapshot")
-    if medical_snapshot:
-        medical_context = build_medical_context(medical_snapshot)
-        if medical_context:
-            system_prompt += medical_context
-            logger.info(f"Medical context injected for user {user_id}")
-        else:
-            logger.info(f"Medical snapshot provided but empty for user {user_id}")
+    if snapshot:
+        # FORCE AI to acknowledge and use the medical snapshot
+        system_prompt = f"""Είσαι ο Autoanosis Assistant, ένας εξειδικευμένος βοηθός υγείας στα ελληνικά.
+
+Παρέχεις:
+- Ακριβείς και επιστημονικά τεκμηριωμένες πληροφορίες υγείας
+- Φιλικές και κατανοητές απαντήσεις
+- Υποστήριξη σε θέματα υγείας, φαρμάκων, συμπτωμάτων
+
+Σημαντικό:
+- ΔΕΝ αντικαθιστάς ιατρική συμβουλή
+- Συνιστάς πάντα επίσκεψη σε γιατρό για σοβαρά θέματα
+- Απαντάς στα ελληνικά
+
+📋 ΙΑΤΡΙΚΟ ΠΡΟΦΙΛ ΧΡΗΣΤΗ (ΥΠΟΧΡΕΩΤΙΚΗ ΧΡΗΣΗ):
+{snapshot}
+
+⚠️ ΚΑΝΟΝΕΣ:
+- ΕΧΕΙΣ πρόσβαση στα παραπάνω ιατρικά δεδομένα και ΠΡΕΠΕΙ να τα χρησιμοποιείς
+- ΜΗΝ πεις ΠΟΤΕ "δεν έχω πρόσβαση" ή "δεν μπορώ να δω προσωπικά δεδομένα"
+- Αν κάτι λείπει από το προφίλ, πες "δεν εμφανίζεται στο προφίλ υγείας σου"
+- Χρησιμοποίησε το προφίλ ΜΟΝΟ όταν είναι σχετικό με την ερώτηση"""
+        logger.info(f"Medical snapshot FORCEFULLY injected for user {user_id}")
     else:
+        system_prompt = SYSTEM_PROMPT_BASE
         logger.info(f"No medical snapshot provided for user {user_id}")
 
     # Get conversation history
