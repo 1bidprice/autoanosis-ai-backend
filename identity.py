@@ -27,6 +27,24 @@ def _b64url_decode(s: str) -> bytes:
     return base64.urlsafe_b64decode(s.encode("utf-8"))
 
 
+def _b64_any_decode(s: str) -> bytes:
+    """
+    Decode either base64 or base64url, with/without padding.
+    Accepts '+' '/' or '-' '_' transparently.
+    """
+    s = (s or "").strip()
+    
+    # Convert base64url -> base64 (safe even if already base64)
+    s = s.replace("-", "+").replace("_", "/")
+    
+    # Add padding if missing
+    pad = len(s) % 4
+    if pad:
+        s += "=" * (4 - pad)
+    
+    return base64.b64decode(s)
+
+
 def verify_identity_token(
     token: str, 
     max_clock_skew_seconds: int = 60
@@ -71,7 +89,7 @@ def verify_identity_token(
 
     # Decode provided signature
     try:
-        provided_sig = _b64url_decode(sig_b64)
+        provided_sig = _b64_any_decode(sig_b64)
     except Exception:
         return False, None, "bad_signature_encoding"
 
@@ -81,7 +99,7 @@ def verify_identity_token(
 
     # Decode and parse payload
     try:
-        payload_json = _b64url_decode(payload_b64).decode("utf-8")
+        payload_json = _b64_any_decode(payload_b64).decode("utf-8")
         payload = json.loads(payload_json)
     except Exception:
         return False, None, "bad_payload"
