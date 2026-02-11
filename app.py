@@ -14,6 +14,7 @@ from flask import Flask, request, jsonify
 from flask_cors import CORS
 from openai import OpenAI
 from identity import verify_identity_token
+from ocr_endpoint import ocr_bp
 
 # Configure logging
 logging.basicConfig(
@@ -24,6 +25,9 @@ logger = logging.getLogger(__name__)
 
 # Initialize Flask app
 app = Flask(__name__)
+
+# Register OCR blueprint
+app.register_blueprint(ocr_bp)
 
 # Configure CORS - allow requests from autoanosis.com
 CORS(app, resources={
