@@ -1,0 +1,17 @@
+name: Send Weekly Email Digest
+
+on:
+  schedule:
+    # Run every Monday at 07:00 UTC (09:00 Athens time, UTC+2)
+    - cron: '0 7 * * 1'
+  workflow_dispatch: # Allow manual trigger
+
+jobs:
+  send-weekly-digest:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Send weekly digest emails
+        run: |
+          curl -X POST https://dip-backend-puof.onrender.com/admin/send-weekly-digests \
+            -H "x-admin-token: ${{ secrets.DIP_ADMIN_TOKEN }}" \
+            -H "Content-Type: application/json"
