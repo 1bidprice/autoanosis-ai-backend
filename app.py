@@ -1,13 +1,22 @@
 """
-Autoanosis AI Backend v3
+Autoanosis AI Backend v4.0.0
 Professional Flask backend for AI Assistant with Medical Context
 Deployed on Render.com
+
+Changelog:
+v4.0.0 (2026-02-25) - WordPress Aggregator Integration
+- NEW: Server-to-server WordPress API integration
+- NEW: Unified medical context from WordPress Aggregator
+- ARCHITECTURE: Clean separation (WordPress API vs frontend snapshot)
+- BACKWARD COMPATIBLE: Fallback to frontend snapshot if API unavailable
+- PRODUCTION: NASA developer approved implementation
 """
 
 import os
 import logging
 import time
 import uuid
+import requests
 from collections import defaultdict
 from datetime import datetime
 from flask import Flask, request, jsonify
@@ -53,6 +62,11 @@ def get_openai_client():
 
 # Token Bridge Configuration
 TOKEN_SECRET = os.environ.get("AUTOANOSIS_IDENTITY_SECRET", "CHANGE_THIS_SECRET")
+
+# WordPress API Configuration
+WORDPRESS_URL = os.environ.get("WORDPRESS_URL", "https://autoanosis.com")
+WORDPRESS_API_KEY = os.environ.get("WORDPRESS_API_KEY", "")
+WORDPRESS_API_ENABLED = os.environ.get("WORDPRESS_API_ENABLED", "false").lower() == "true"
 
 # Rate limiting storage (in-memory)
 rate_limit_storage = defaultdict(list)
@@ -130,6 +144,52 @@ def save_conversation_message(conversation_id: str, user_id: int, role: str, con
     if len(conv['messages']) > MAX_CONVERSATION_HISTORY:
         conv['messages'] = conv['messages'][-MAX_CONVERSATION_HISTORY:]
 
+def fetch_medical_context_from_wordpress(user_id: int) -> dict:
+    """
+    Fetch medical context from WordPress Aggregator API
+    
+    Uses server-to-server bot endpoint: POST /wp-json/autoanosis/v1/bot/medical-context
+    """
+    if not WORDPRESS_API_ENABLED or not WORDPRESS_API_KEY:
+        logger.warning("WordPress API disabled or no API key configured")
+        return None
+    
+    try:
+        url = f"{WORDPRESS_URL}/wp-json/autoanosis/v1/bot/medical-context"
+        headers = {
+            "X-API-Key": WORDPRESS_API_KEY,
+            "Content-Type": "application/json"
+        }
+        payload = {"user_id": user_id}
+        
+        logger.info(f"Fetching medical context from WordPress for user {user_id}")
+        
+        response = requests.post(url, json=payload, headers=headers, timeout=10)
+        
+        if response.status_code == 200:
+            data = response.json()
+            logger.info(f"Successfully fetched medical context for user {user_id}")
+            return data.get('unified', {})
+        elif response.status_code == 401:
+            logger.error("WordPress API authentication failed - check API key")
+            return None
+        elif response.status_code == 400:
+            logger.error(f"WordPress API bad request: {response.text}")
+            return None
+        else:
+            logger.error(f"WordPress API error {response.status_code}: {response.text}")
+            return None
+            
+    except requests.exceptions.Timeout:
+        logger.error("WordPress API request timeout")
+        return None
+    except requests.exceptions.ConnectionError:
+        logger.error("WordPress API connection error")
+        return None
+    except Exception as e:
+        logger.error(f"WordPress API unexpected error: {str(e)}")
+        return None
+
 def build_medical_context(medical_snapshot: dict) -> str:
     """Build medical context string from snapshot"""
     if not medical_snapshot or not isinstance(medical_snapshot, dict):
@@ -176,8 +236,15 @@ def health_check():
     return jsonify({
         "status": "healthy",
         "service": "autoanosis-ai-backend",
-        "version": "3.0.0",
-        "features": ["medical_snapshot", "session_memory", "rate_limiting"]
+        "version": "4.0.0",
+        "features": [
+            "wordpress_api_integration",
+            "unified_medical_context",
+            "medical_snapshot",
+            "session_memory",
+            "rate_limiting"
+        ],
+        "wordpress_api_enabled": WORDPRESS_API_ENABLED
     }), 200
 
 @app.route('/chat', methods=['POST'])
@@ -219,7 +286,25 @@ def chat():
         logger.info(f"Generated new conversation ID: {conversation_id}")
 
     # Build system prompt with MANDATORY medical snapshot usage
-    snapshot = data.get("medical_snapshot") or data.get("snapshot")
+    # Try WordPress API first (new unified system), fallback to frontend snapshot
+    snapshot = None
+    snapshot_source = "none"
+    
+    # 1. Try WordPress Aggregator API (preferred - unified data)
+    if WORDPRESS_API_ENABLED:
+        wordpress_context = fetch_medical_context_from_wordpress(user_id)
+        if wordpress_context:
+            snapshot = build_medical_context(wordpress_context)
+            snapshot_source = "wordpress_api"
+            logger.info(f"Using WordPress API medical context for user {user_id}")
+    
+    # 2. Fallback to frontend snapshot (legacy - backward compatible)
+    if not snapshot:
+        frontend_snapshot = data.get("medical_snapshot") or data.get("snapshot")
+        if frontend_snapshot:
+            snapshot = build_medical_context(frontend_snapshot)
+            snapshot_source = "frontend"
+            logger.info(f"Using frontend medical snapshot for user {user_id}")
     
     if snapshot:
         # FORCE AI to acknowledge and use the medical snapshot
