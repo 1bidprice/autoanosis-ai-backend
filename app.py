@@ -1,15 +1,21 @@
 """
-Autoanosis AI Backend v4.0.0
+Autoanosis AI Backend v4.1.0
 Professional Flask backend for AI Assistant with Medical Context
 Deployed on Render.com
 
 Changelog:
+v4.1.0 (2026-02-25) - Phase 1+2 Security Hardening
+- SECURITY: Disabled frontend snapshot fallback in production (fail-safe)
+- SECURITY: Production-safe medical data access (no injection risk)
+- AUDIT: Enhanced logging (user_id, source, latency, no PII)
+- HARDENING: Fail-safe design - WordPress API failure = safe error
+- PRODUCTION: Medical-grade security standards
+
 v4.0.0 (2026-02-25) - WordPress Aggregator Integration
 - NEW: Server-to-server WordPress API integration
 - NEW: Unified medical context from WordPress Aggregator
 - ARCHITECTURE: Clean separation (WordPress API vs frontend snapshot)
 - BACKWARD COMPATIBLE: Fallback to frontend snapshot if API unavailable
-- PRODUCTION: NASA developer approved implementation
 """
 
 import os
@@ -67,6 +73,7 @@ TOKEN_SECRET = os.environ.get("AUTOANOSIS_IDENTITY_SECRET", "CHANGE_THIS_SECRET"
 WORDPRESS_URL = os.environ.get("WORDPRESS_URL", "https://autoanosis.com")
 WORDPRESS_API_KEY = os.environ.get("WORDPRESS_API_KEY", "")
 WORDPRESS_API_ENABLED = os.environ.get("WORDPRESS_API_ENABLED", "false").lower() == "true"
+ALLOW_FRONTEND_SNAPSHOT = os.environ.get("ALLOW_FRONTEND_SNAPSHOT", "false").lower() == "true"
 
 # Rate limiting storage (in-memory)
 rate_limit_storage = defaultdict(list)
@@ -236,15 +243,19 @@ def health_check():
     return jsonify({
         "status": "healthy",
         "service": "autoanosis-ai-backend",
-        "version": "4.0.0",
+        "version": "4.1.0",
         "features": [
             "wordpress_api_integration",
             "unified_medical_context",
-            "medical_snapshot",
+            "fail_safe_medical_access",
+            "production_security_hardening",
             "session_memory",
-            "rate_limiting"
+            "rate_limiting",
+            "audit_logging"
         ],
-        "wordpress_api_enabled": WORDPRESS_API_ENABLED
+        "wordpress_api_enabled": WORDPRESS_API_ENABLED,
+        "allow_frontend_snapshot": ALLOW_FRONTEND_SNAPSHOT,
+        "security_level": "production" if not ALLOW_FRONTEND_SNAPSHOT else "development"
     }), 200
 
 @app.route('/chat', methods=['POST'])
@@ -286,25 +297,36 @@ def chat():
         logger.info(f"Generated new conversation ID: {conversation_id}")
 
     # Build system prompt with MANDATORY medical snapshot usage
-    # Try WordPress API first (new unified system), fallback to frontend snapshot
+    # Production-safe: WordPress API as source of truth, fail safely if unavailable
     snapshot = None
     snapshot_source = "none"
+    start_time = time.time()
     
-    # 1. Try WordPress Aggregator API (preferred - unified data)
+    # 1. Try WordPress Aggregator API (source of truth)
     if WORDPRESS_API_ENABLED:
         wordpress_context = fetch_medical_context_from_wordpress(user_id)
         if wordpress_context:
             snapshot = build_medical_context(wordpress_context)
             snapshot_source = "wordpress_api"
-            logger.info(f"Using WordPress API medical context for user {user_id}")
+            latency_ms = int((time.time() - start_time) * 1000)
+            logger.info(f"Using WordPress API medical context for user {user_id} (latency: {latency_ms}ms)")
     
-    # 2. Fallback to frontend snapshot (legacy - backward compatible)
-    if not snapshot:
+    # 2. Frontend snapshot fallback (ONLY if explicitly enabled)
+    # Production default: ALLOW_FRONTEND_SNAPSHOT=false (fail-safe)
+    if not snapshot and ALLOW_FRONTEND_SNAPSHOT:
         frontend_snapshot = data.get("medical_snapshot") or data.get("snapshot")
         if frontend_snapshot:
             snapshot = build_medical_context(frontend_snapshot)
-            snapshot_source = "frontend"
-            logger.info(f"Using frontend medical snapshot for user {user_id}")
+            snapshot_source = "frontend_snapshot"
+            logger.warning(f"Using frontend snapshot for user {user_id} (fallback enabled)")
+    
+    # 3. Fail safely if no medical context available
+    if not snapshot:
+        logger.error(f"No medical context available for user {user_id} (wordpress_api_enabled={WORDPRESS_API_ENABLED}, allow_frontend={ALLOW_FRONTEND_SNAPSHOT})")
+        return jsonify({
+            "error": "medical_context_unavailable",
+            "reply": "Δεν μπορώ να ανακτήσω με ασφάλεια το ιατρικό σου πλαίσιο αυτή τη στιγμή. Παρακαλώ δοκίμασε ξανά σε λίγο."
+        }), 503
     
     if snapshot:
         # FORCE AI to acknowledge and use the medical snapshot
