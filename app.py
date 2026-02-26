@@ -250,6 +250,14 @@ def normalize_wordpress_response(wp_data: dict) -> dict:
                 normalized['autoanosis_conditions'] = unified.get('conditions')
             if unified.get('allergies'):
                 normalized['autoanosis_allergies'] = unified.get('allergies')
+            
+            # Medical memory (summary text) from unified
+            if unified.get('medical_memory'):
+                normalized['autoanosis_medical_memory'] = unified.get('medical_memory')
+            
+            # BEST protocol (structured data) from unified
+            if unified.get('best_protocol'):
+                normalized['autoanosis_best_protocol'] = unified.get('best_protocol')
     
     return normalized
 
@@ -281,13 +289,40 @@ def build_medical_context(medical_snapshot: dict) -> str:
         if allergy_names:
             context_parts.append(f"Αλλεργίες: {', '.join(allergy_names)}")
     
-    # Medical Memory (recent notes)
+    # Medical Memory (summary text from WordPress)
     memory = medical_snapshot.get('autoanosis_medical_memory')
-    if memory and isinstance(memory, list) and len(memory) > 0:
-        recent = memory[:3]  # Last 3 entries
-        notes = [m.get('note', '') for m in recent if isinstance(m, dict) and m.get('note')]
-        if notes:
-            context_parts.append(f"Πρόσφατες σημειώσεις: {'; '.join(notes)}")
+    if memory:
+        # medical_memory is a string (summary), not a list
+        if isinstance(memory, str) and memory.strip():
+            context_parts.append(f"📝 Προετοιμασία Ραντεβού (B.E.S.T.):\n{memory}")
+        # Fallback: if it's a list (old format)
+        elif isinstance(memory, list) and len(memory) > 0:
+            recent = memory[:3]
+            notes = [m.get('note', '') for m in recent if isinstance(m, dict) and m.get('note')]
+            if notes:
+                context_parts.append(f"Πρόσφατες σημειώσεις: {'; '.join(notes)}")
+    
+    # BEST Protocol (structured data)
+    best = medical_snapshot.get('autoanosis_best_protocol')
+    if best and isinstance(best, dict):
+        # Extract key BEST fields
+        best_parts = []
+        if best.get('visit_doctor'):
+            best_parts.append(f"Ιατρός: {best['visit_doctor']}")
+        if best.get('visit_goal'):
+            best_parts.append(f"Στόχος επίσκεψης: {best['visit_goal']}")
+        if best.get('b_labs'):
+            best_parts.append(f"Baseline εξετάσεις: {best['b_labs']}")
+        if best.get('e_infections') or best.get('e_stress'):
+            events = []
+            if best.get('e_infections'): events.append(f"Λοιμώξεις: {best['e_infections']}")
+            if best.get('e_stress'): events.append(f"Stress: {best['e_stress']}")
+            best_parts.append(f"Events: {', '.join(events)}")
+        
+        if best_parts:
+            # Only add if we didn't already add medical_memory summary
+            if not any('B.E.S.T.' in part for part in context_parts):
+                context_parts.append("📊 BEST Protocol:\n" + "\n".join(best_parts))
     
     if not context_parts:
         return ""
