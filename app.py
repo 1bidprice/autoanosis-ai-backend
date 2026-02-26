@@ -318,7 +318,7 @@ def health_check():
         ],
         "config": {
             "wordpress_api_enabled": WORDPRESS_API_ENABLED,
-            "wordpress_api_url": WORDPRESS_API_URL if WORDPRESS_API_ENABLED else None,
+            "wordpress_api_url": WORDPRESS_URL if WORDPRESS_API_ENABLED else None,
             "allow_frontend_snapshot": ALLOW_FRONTEND_SNAPSHOT,
             "security_level": "production" if not ALLOW_FRONTEND_SNAPSHOT else "development"
         },
@@ -332,7 +332,7 @@ def health_check():
     if WORDPRESS_API_ENABLED:
         try:
             # Lightweight ping to WordPress API (no user data)
-            url = f"{WORDPRESS_API_URL}"
+            url = f"{WORDPRESS_URL}"
             headers = {"X-API-Key": WORDPRESS_API_KEY}
             # Use a test user_id that should always exist (admin user_id=1)
             payload = {"user_id": 1}
