@@ -296,10 +296,17 @@ def build_medical_context(medical_snapshot: dict) -> str:
 
 @app.route('/health', methods=['GET'])
 def health_check():
-    return jsonify({
+    """Enhanced health check with WordPress API reachability test
+    
+    Returns:
+    - 200: All systems operational (including WordPress API if enabled)
+    - 503: Critical failure (WordPress API unreachable when enabled)
+    """
+    health_status = {
         "status": "healthy",
         "service": "autoanosis-ai-backend",
         "version": "4.1.0",
+        "timestamp": datetime.utcnow().isoformat() + "Z",
         "features": [
             "wordpress_api_integration",
             "unified_medical_context",
@@ -309,10 +316,87 @@ def health_check():
             "rate_limiting",
             "audit_logging"
         ],
-        "wordpress_api_enabled": WORDPRESS_API_ENABLED,
-        "allow_frontend_snapshot": ALLOW_FRONTEND_SNAPSHOT,
-        "security_level": "production" if not ALLOW_FRONTEND_SNAPSHOT else "development"
-    }), 200
+        "config": {
+            "wordpress_api_enabled": WORDPRESS_API_ENABLED,
+            "wordpress_api_url": WORDPRESS_API_URL if WORDPRESS_API_ENABLED else None,
+            "allow_frontend_snapshot": ALLOW_FRONTEND_SNAPSHOT,
+            "security_level": "production" if not ALLOW_FRONTEND_SNAPSHOT else "development"
+        },
+        "checks": {
+            "env_vars": True,  # If we got here, critical env vars are loaded
+            "wordpress_api": None
+        }
+    }
+    
+    # Test WordPress API reachability if enabled
+    if WORDPRESS_API_ENABLED:
+        try:
+            # Lightweight ping to WordPress API (no user data)
+            url = f"{WORDPRESS_API_URL}"
+            headers = {"X-API-Key": WORDPRESS_API_KEY}
+            # Use a test user_id that should always exist (admin user_id=1)
+            payload = {"user_id": 1}
+            
+            response = requests.post(url, json=payload, headers=headers, timeout=5)
+            
+            if response.status_code == 200:
+                health_status["checks"]["wordpress_api"] = {
+                    "status": "reachable",
+                    "latency_ms": int(response.elapsed.total_seconds() * 1000)
+                }
+            elif response.status_code == 401:
+                # API key issue - critical failure
+                health_status["status"] = "unhealthy"
+                health_status["checks"]["wordpress_api"] = {
+                    "status": "auth_failed",
+                    "error": "WordPress API authentication failed - check API key"
+                }
+                logger.error("Health check: WordPress API authentication failed")
+                return jsonify(health_status), 503
+            else:
+                # Other error - critical failure
+                health_status["status"] = "unhealthy"
+                health_status["checks"]["wordpress_api"] = {
+                    "status": "error",
+                    "http_status": response.status_code,
+                    "error": f"WordPress API returned {response.status_code}"
+                }
+                logger.error(f"Health check: WordPress API error {response.status_code}")
+                return jsonify(health_status), 503
+                
+        except requests.exceptions.Timeout:
+            health_status["status"] = "unhealthy"
+            health_status["checks"]["wordpress_api"] = {
+                "status": "timeout",
+                "error": "WordPress API request timeout (5s)"
+            }
+            logger.error("Health check: WordPress API timeout")
+            return jsonify(health_status), 503
+            
+        except requests.exceptions.ConnectionError:
+            health_status["status"] = "unhealthy"
+            health_status["checks"]["wordpress_api"] = {
+                "status": "unreachable",
+                "error": "WordPress API connection error"
+            }
+            logger.error("Health check: WordPress API connection error")
+            return jsonify(health_status), 503
+            
+        except Exception as e:
+            health_status["status"] = "unhealthy"
+            health_status["checks"]["wordpress_api"] = {
+                "status": "error",
+                "error": f"Unexpected error: {str(e)}"
+            }
+            logger.error(f"Health check: WordPress API unexpected error: {str(e)}")
+            return jsonify(health_status), 503
+    else:
+        health_status["checks"]["wordpress_api"] = {
+            "status": "disabled",
+            "note": "WordPress API integration is not enabled"
+        }
+    
+    return jsonify(health_status), 200
 
 @app.route('/chat', methods=['POST'])
 def chat():
