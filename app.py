@@ -176,7 +176,7 @@ def fetch_medical_context_from_wordpress(user_id: int) -> dict:
         if response.status_code == 200:
             data = response.json()
             logger.info(f"Successfully fetched medical context for user {user_id}")
-            return data.get('unified', {})
+            return normalize_wordpress_response(data)
         elif response.status_code == 401:
             logger.error("WordPress API authentication failed - check API key")
             return None
@@ -196,6 +196,62 @@ def fetch_medical_context_from_wordpress(user_id: int) -> dict:
     except Exception as e:
         logger.error(f"WordPress API unexpected error: {str(e)}")
         return None
+
+def normalize_wordpress_response(wp_data: dict) -> dict:
+    """Normalize WordPress API response to frontend schema
+    
+    WordPress API returns:
+    {
+      "subsystems": {
+        "medical_memory": {
+          "medications": [{"medication_name": "...", "dosage": "..."}]
+        }
+      },
+      "unified": {...}
+    }
+    
+    Frontend expects:
+    {
+      "autoanosis_medications": [{"name": "..."}],
+      "autoanosis_conditions": [...],
+      "autoanosis_allergies": [...]
+    }
+    """
+    if not isinstance(wp_data, dict):
+        return {}
+    
+    normalized = {}
+    
+    # Extract medications from subsystems.medical_memory.medications
+    subsystems = wp_data.get('subsystems', {})
+    if isinstance(subsystems, dict):
+        medical_memory = subsystems.get('medical_memory', {})
+        if isinstance(medical_memory, dict):
+            medications = medical_memory.get('medications', [])
+            if isinstance(medications, list) and len(medications) > 0:
+                # Transform to frontend schema
+                normalized['autoanosis_medications'] = [
+                    {'name': med.get('medication_name', ''), 'dosage': med.get('dosage', '')}
+                    for med in medications
+                    if isinstance(med, dict) and med.get('medication_name')
+                ]
+    
+    # Try unified as fallback (if subsystems is empty)
+    if not normalized.get('autoanosis_medications'):
+        unified = wp_data.get('unified', {})
+        if isinstance(unified, dict):
+            # Check if unified has medications
+            unified_meds = unified.get('medications', [])
+            if isinstance(unified_meds, list) and len(unified_meds) > 0:
+                normalized['autoanosis_medications'] = unified_meds
+            
+            # Conditions and allergies from unified
+            if unified.get('conditions'):
+                normalized['autoanosis_conditions'] = unified.get('conditions')
+            if unified.get('allergies'):
+                normalized['autoanosis_allergies'] = unified.get('allergies')
+    
+    return normalized
 
 def build_medical_context(medical_snapshot: dict) -> str:
     """Build medical context string from snapshot"""
@@ -296,33 +352,38 @@ def chat():
         conversation_id = f"conv_{int(time.time())}_{uuid.uuid4().hex[:8]}"
         logger.info(f"Generated new conversation ID: {conversation_id}")
 
-    # Build system prompt with MANDATORY medical snapshot usage
-    # Production-safe: WordPress API as source of truth, fail safely if unavailable
-    snapshot = None
+    # Build system prompt with medical snapshot (if available)
+    # Production-safe: WordPress API as source of truth
+    snapshot = ""
     snapshot_source = "none"
     start_time = time.time()
+    wordpress_api_success = False
     
     # 1. Try WordPress Aggregator API (source of truth)
     if WORDPRESS_API_ENABLED:
         wordpress_context = fetch_medical_context_from_wordpress(user_id)
-        if wordpress_context:
+        if wordpress_context is not None:  # API call succeeded (even if empty data)
+            wordpress_api_success = True
             snapshot = build_medical_context(wordpress_context)
             snapshot_source = "wordpress_api"
             latency_ms = int((time.time() - start_time) * 1000)
-            logger.info(f"Using WordPress API medical context for user {user_id} (latency: {latency_ms}ms)")
+            if snapshot:
+                logger.info(f"Using WordPress API medical context for user {user_id} (latency: {latency_ms}ms)")
+            else:
+                logger.info(f"WordPress API returned empty medical context for user {user_id} (latency: {latency_ms}ms)")
     
-    # 2. Frontend snapshot fallback (ONLY if explicitly enabled)
+    # 2. Frontend snapshot fallback (ONLY if explicitly enabled AND WordPress API failed)
     # Production default: ALLOW_FRONTEND_SNAPSHOT=false (fail-safe)
-    if not snapshot and ALLOW_FRONTEND_SNAPSHOT:
+    if not wordpress_api_success and ALLOW_FRONTEND_SNAPSHOT:
         frontend_snapshot = data.get("medical_snapshot") or data.get("snapshot")
         if frontend_snapshot:
             snapshot = build_medical_context(frontend_snapshot)
             snapshot_source = "frontend_snapshot"
             logger.warning(f"Using frontend snapshot for user {user_id} (fallback enabled)")
     
-    # 3. Fail safely if no medical context available
-    if not snapshot:
-        logger.error(f"No medical context available for user {user_id} (wordpress_api_enabled={WORDPRESS_API_ENABLED}, allow_frontend={ALLOW_FRONTEND_SNAPSHOT})")
+    # 3. Fail safely ONLY if WordPress API is enabled but failed to respond
+    if WORDPRESS_API_ENABLED and not wordpress_api_success:
+        logger.error(f"WordPress API failed for user {user_id} (wordpress_api_enabled={WORDPRESS_API_ENABLED})")
         return jsonify({
             "error": "medical_context_unavailable",
             "reply": "Δεν μπορώ να ανακτήσω με ασφάλεια το ιατρικό σου πλαίσιο αυτή τη στιγμή. Παρακαλώ δοκίμασε ξανά σε λίγο."
