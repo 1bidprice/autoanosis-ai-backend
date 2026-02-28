@@ -1,7 +1,8 @@
-"""Autoanosis AI Backend v5.5.0"
+"""Autoanosis AI Backend v5.6.0"
 Professional Flask backend for AI Assistant with Medical Context
 Deployed on Render.com
 Changelog:
+v5.6.0 (2026-03-01) - Full medical data: ALL BEST fields + timestamps + test_results + health_notes + health_tracking + best_summary fallback
 v5.5.0 (2026-02-28) - Add BEST protocol support in helpers snapshot + best_protocol detection key
 v5.4.0 (2026-02-28) - Handle helpers.php snapshot structure (health_info, autoimmune_type, medications)
 v5.3.0 (2026-02-28) - Accept both wp_context and medical_snapshot keys from WordPress
@@ -304,25 +305,99 @@ def build_medical_context_from_helpers_snapshot(snap: dict) -> str:
         if hp_parts:
             parts.append("Προφίλ υγείας: " + ", ".join(hp_parts[:8]))
 
-    # BEST Protocol (from autoanosis_medical_snapshot_last)
+    # BEST Protocol (from autoanosis_medical_snapshot_last) — ALL FIELDS v5.6.0
     best = snap.get("best_protocol") or snap.get("autoanosis_best_protocol")
     if best and isinstance(best, dict):
         bp = []
-        if best.get("visit_doctor"): bp.append(f"Ιατρός: {best['visit_doctor']}")
-        if best.get("visit_goal"):   bp.append(f"Στόχος επίσκεψης: {best['visit_goal']}")
-        if best.get("b_labs"):       bp.append(f"Baseline εξετάσεις: {best['b_labs']}")
-        if best.get("e_infections"): bp.append(f"Λοιμώξεις: {best['e_infections']}")
-        if best.get("e_stress"):     bp.append(f"Stress: {best['e_stress']}")
-        if best.get("s_symptoms"):   bp.append(f"Συμπτώματα: {best['s_symptoms']}")
-        if best.get("t_treatments"): bp.append(f"Θεραπείες: {best['t_treatments']}")
+        # Visit info
+        if best.get("visit_date"):    bp.append(f"Ημερομηνία Ραντεβού: {best['visit_date']}")
+        if best.get("visit_doctor"):  bp.append(f"Ιατρός/Ειδικότητα: {best['visit_doctor']}")
+        if best.get("visit_goal"):    bp.append(f"Στόχος επίσκεψης: {best['visit_goal']}")
+        if best.get("visit_period"):  bp.append(f"Περίοδος αναφοράς: {best['visit_period']}")
+        # B — Baseline
+        if best.get("b_meds"):        bp.append(f"[B] Φάρμακα & δοσολογία: {best['b_meds']}")
+        if best.get("b_side"):        bp.append(f"[B] Συμμόρφωση & παρενέργειες: {best['b_side']}")
+        if best.get("b_labs"):        bp.append(f"[B] Εξετάσεις εκτός ορίων: {best['b_labs']}")
+        if best.get("b_baseline"):    bp.append(f"[B] Σημειώσεις baseline (ύπνος/ενέργεια/πίεση): {best['b_baseline']}")
+        # E — Events
+        if best.get("e_infections"):  bp.append(f"[E] Λοιμώξεις/Ιώσεις: {best['e_infections']}")
+        if best.get("e_stress"):      bp.append(f"[E] Στρεσογόνα γεγονότα: {best['e_stress']}")
+        _e_life = best.get("e_lifestyle") or best.get("e_events")
+        if _e_life:                   bp.append(f"[E] Αλλαγές τρόπου ζωής: {_e_life}")
+        if best.get("e_other"):       bp.append(f"[E] Άλλα συμβάντα: {best['e_other']}")
+        # S — Symptoms
+        if best.get("s_symptoms"):    bp.append(f"[S] Συμπτώματα (VAS 0-10): {best['s_symptoms']}")
+        if best.get("s_timing"):      bp.append(f"[S] Χρονική χαρτογράφηση: {best['s_timing']}")
+        if best.get("s_impact"):      bp.append(f"[S] Λειτουργικός αντίκτυπος: {best['s_impact']}")
+        # T — Targets
+        if best.get("t_goals"):       bp.append(f"[T] Στόχοι ποιότητας ζωής: {best['t_goals']}")
+        if best.get("t_biomarkers"):  bp.append(f"[T] Στόχοι βιοδεικτών: {best['t_biomarkers']}")
+        if best.get("t_questions"):   bp.append(f"[T] Ερωτήσεις προς ιατρό: {best['t_questions']}")
+        _t_plan = best.get("t_plan") or best.get("t_treatments")
+        if _t_plan:                   bp.append(f"[T] Πλάνο/Θεραπείες: {_t_plan}")
+        # Timestamp of BEST entry
+        _ts = best.get("ts") or best.get("timestamp") or best.get("saved_at")
+        if _ts:                       bp.append(f"[Ημ/νία καταχώρισης BEST: {_ts}]")
         if bp:
-            parts.append("BEST Protocol (Προετοιμασία Ραντεβού):\n" + "\n".join(bp))
+            parts.append("BEST Protocol (Προετοιμασία Ραντεβού — B.E.S.T.):\n" + "\n".join(bp))
+
+    # best_summary fallback (text version built by helpers.php)
+    best_summary = snap.get("best_summary")
+    if best_summary and isinstance(best_summary, str) and best_summary.strip():
+        if not any("BEST Protocol" in p for p in parts):
+            parts.append(f"BEST Protocol (σύνοψη):\n{best_summary.strip()}")
 
     # Medical memory / BEST summary text
     memory = snap.get("medical_memory") or snap.get("autoanosis_medical_memory")
     if memory and isinstance(memory, str) and memory.strip():
         if not any("BEST" in p for p in parts):
             parts.append(f"Προετοιμασία Ραντεβού (B.E.S.T.):\n{memory.strip()}")
+
+    # Test results (lab results with dates)
+    test_results = snap.get("test_results") or []
+    if isinstance(test_results, list) and test_results:
+        res_lines = []
+        for r in test_results:
+            if isinstance(r, dict):
+                date = r.get("test_date") or r.get("created_at") or ""
+                name = r.get("test_name") or r.get("name") or ""
+                val  = r.get("result_value") or r.get("value") or ""
+                unit = r.get("unit") or ""
+                note = r.get("notes") or r.get("note") or ""
+                line = f"{date}: {name} = {val} {unit}".strip().rstrip(":")
+                if note: line += f" ({note[:80]})"
+                if line.strip(":"): res_lines.append(line)
+        if res_lines:
+            parts.append("Αποτελέσματα Εξετάσεων (με ημερομηνία):\n" + "\n".join(res_lines))
+
+    # Health notes
+    health_notes = snap.get("health_notes") or []
+    if isinstance(health_notes, list) and health_notes:
+        hn_lines = []
+        for n in health_notes:
+            if isinstance(n, dict):
+                date  = n.get("created_at") or n.get("date") or ""
+                title = n.get("note_title") or n.get("title") or ""
+                body  = n.get("note_content") or n.get("content") or n.get("note") or ""
+                line  = f"{date}: {title} — {body[:120]}".strip().rstrip("—").strip()
+                if line.strip(":"): hn_lines.append(line)
+        if hn_lines:
+            parts.append("Σημειώσεις Υγείας:\n" + "\n".join(hn_lines))
+
+    # Health tracking (with timestamps)
+    health_tracking = snap.get("health_tracking") or []
+    if isinstance(health_tracking, list) and health_tracking:
+        ht_lines = []
+        for t in health_tracking[:15]:
+            if isinstance(t, dict):
+                date   = t.get("tracked_at") or t.get("date") or ""
+                metric = t.get("metric_name") or t.get("metric") or t.get("type") or ""
+                val    = t.get("metric_value") or t.get("value") or ""
+                unit   = t.get("unit") or ""
+                line   = f"{date}: {metric} = {val} {unit}".strip().rstrip(":")
+                if line.strip(":"): ht_lines.append(line)
+        if ht_lines:
+            parts.append("Παρακολούθηση Υγείας:\n" + "\n".join(ht_lines))
 
     if not parts:
         return ""
