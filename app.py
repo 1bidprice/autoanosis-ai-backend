@@ -1,24 +1,31 @@
-"""
-Autoanosis AI Backend v4.1.0
+"""Autoanosis AI Backend v5.5.0"
 Professional Flask backend for AI Assistant with Medical Context
 Deployed on Render.com
-
 Changelog:
+v5.5.0 (2026-02-28) - Add BEST protocol support in helpers snapshot + best_protocol detection key
+v5.4.0 (2026-02-28) - Handle helpers.php snapshot structure (health_info, autoimmune_type, medications)
+v5.3.0 (2026-02-28) - Accept both wp_context and medical_snapshot keys from WordPress
+v5.2.0 (2026-02-28) - CTX logs, BEST system prompt fix, wp_context key logging
+v5.1.0 (2026-02-28) - WP PUSH architecture (final solution)
+- ARCH: Render no longer pulls from WordPress (WAF-proof)
+- ARCH: WordPress chat-proxy pushes wp_context in request body
+- SECURITY: HMAC-SHA256 signature on proxy requests (X-Autoa-Proxy-Sig)
+- SECURITY: Timestamp anti-replay (5-min window)
+- NEW: AUTOA_AI_PROXY_SECRET env var for proxy HMAC verification
+- CLEAN: Removed all WordPress pull logic (WORDPRESS_AJAX_URL etc. no longer needed)
+- LOGS: [PROXY], [CONTEXT], [PROMPT] structured log prefixes
+v5.0.0 (2026-02-28) - Admin-ajax HMAC bridge (blocked by WAF)
+v4.6.0 (2026-02-27) - WAF-bypass endpoint attempt via /wp-json/autoanosis-internal/
+v4.5.0 (2026-02-27) - Fix WordPress endpoint URL
+v4.4.0 (2026-02-27) - Production-grade schema validation
+v4.3.0 (2026-02-27) - Accept 2xx responses from WordPress
 v4.1.0 (2026-02-25) - Phase 1+2 Security Hardening
-- SECURITY: Disabled frontend snapshot fallback in production (fail-safe)
-- SECURITY: Production-safe medical data access (no injection risk)
-- AUDIT: Enhanced logging (user_id, source, latency, no PII)
-- HARDENING: Fail-safe design - WordPress API failure = safe error
-- PRODUCTION: Medical-grade security standards
-
 v4.0.0 (2026-02-25) - WordPress Aggregator Integration
-- NEW: Server-to-server WordPress API integration
-- NEW: Unified medical context from WordPress Aggregator
-- ARCHITECTURE: Clean separation (WordPress API vs frontend snapshot)
-- BACKWARD COMPATIBLE: Fallback to frontend snapshot if API unavailable
 """
-
 import os
+import hmac as _hmac
+import hashlib
+import json
 import logging
 import time
 import uuid
@@ -31,33 +38,33 @@ from openai import OpenAI
 from identity import verify_identity_token
 from ocr_endpoint import ocr_bp
 
-# Configure logging
+# ---------------------------------------------------------------------------
+# Logging
+# ---------------------------------------------------------------------------
 logging.basicConfig(
     level=logging.INFO,
     format='%(asctime)s - %(name)s - %(levelname)s - %(message)s'
 )
 logger = logging.getLogger(__name__)
 
-# Initialize Flask app
+# ---------------------------------------------------------------------------
+# Flask app
+# ---------------------------------------------------------------------------
 app = Flask(__name__)
-
-# Register OCR blueprint
 app.register_blueprint(ocr_bp)
 
-# Configure CORS - allow requests from autoanosis.com
 CORS(app, resources={
     r"/*": {
-        "origins": [
-            "https://autoanosis.com",
-            "https://www.autoanosis.com"
-        ],
+        "origins": ["https://autoanosis.com", "https://www.autoanosis.com"],
         "methods": ["GET", "POST", "OPTIONS"],
-        "allow_headers": ["Content-Type", "X-User-ID"],
+        "allow_headers": ["Content-Type", "X-User-ID", "X-Autoa-Proxy-TS", "X-Autoa-Proxy-Nonce", "X-Autoa-Proxy-Sig"],
         "supports_credentials": True
     }
 })
 
-# Configure OpenAI client (lazy initialization)
+# ---------------------------------------------------------------------------
+# OpenAI (lazy)
+# ---------------------------------------------------------------------------
 openai_client = None
 
 def get_openai_client():
@@ -66,490 +73,534 @@ def get_openai_client():
         openai_client = OpenAI(api_key=os.environ.get("OPENAI_API_KEY"))
     return openai_client
 
-# Token Bridge Configuration
-TOKEN_SECRET = os.environ.get("AUTOANOSIS_IDENTITY_SECRET", "CHANGE_THIS_SECRET")
+# ---------------------------------------------------------------------------
+# Configuration
+# ---------------------------------------------------------------------------
+# v5.1.0: WP PUSH — Render verifies proxy signature, never pulls from WP
+AUTOA_PROXY_SECRET = os.environ.get("AUTOA_AI_PROXY_SECRET", "").strip()
+PROXY_TS_TOLERANCE = 300  # 5 minutes
 
-# WordPress API Configuration
-WORDPRESS_URL = os.environ.get("WORDPRESS_URL", "https://autoanosis.com")
-WORDPRESS_API_KEY = os.environ.get("WORDPRESS_API_KEY", "")
-WORDPRESS_API_ENABLED = os.environ.get("WORDPRESS_API_ENABLED", "false").lower() == "true"
-ALLOW_FRONTEND_SNAPSHOT = os.environ.get("ALLOW_FRONTEND_SNAPSHOT", "false").lower() == "true"
-
-# Rate limiting storage (in-memory)
+# ---------------------------------------------------------------------------
+# Rate limiting (in-memory)
+# ---------------------------------------------------------------------------
 rate_limit_storage = defaultdict(list)
-RATE_LIMIT_USER = 20  # 20 requests per 10 minutes for authenticated users
-RATE_LIMIT_WINDOW = 600  # 10 minutes in seconds
+RATE_LIMIT_USER   = 20   # requests per window
+RATE_LIMIT_WINDOW = 600  # 10 minutes
 
-# Session Memory Storage (in-memory)
-# Format: {conversation_id: {"messages": [...], "last_activity": timestamp, "user_id": int}}
+def check_rate_limit(identifier: str) -> bool:
+    now = time.time()
+    rate_limit_storage[identifier] = [
+        t for t in rate_limit_storage[identifier] if now - t < RATE_LIMIT_WINDOW
+    ]
+    if len(rate_limit_storage[identifier]) >= RATE_LIMIT_USER:
+        return False
+    rate_limit_storage[identifier].append(now)
+    return True
+
+# ---------------------------------------------------------------------------
+# Conversation memory (in-memory)
+# ---------------------------------------------------------------------------
 conversation_storage = {}
-MAX_CONVERSATION_HISTORY = 10  # Keep last 10 messages per conversation
+MAX_CONVERSATION_HISTORY = 10
 CONVERSATION_TTL = 3600  # 1 hour
 
-# System prompt for Autoanosis health assistant
-SYSTEM_PROMPT_BASE = """Είσαι ο Autoanosis Assistant, ένας εξειδικευμένος βοηθός υγείας στα ελληνικά.
+def cleanup_old_conversations():
+    now = time.time()
+    expired = [
+        cid for cid, d in conversation_storage.items()
+        if now - d.get("last_activity", 0) > CONVERSATION_TTL
+    ]
+    for cid in expired:
+        del conversation_storage[cid]
+        logger.info(f"Cleaned up expired conversation: {cid}")
 
+def get_conversation_history(conversation_id: str) -> list:
+    return conversation_storage.get(conversation_id, {}).get("messages", [])
+
+def save_conversation_message(conversation_id: str, user_id: int, role: str, content: str):
+    if conversation_id not in conversation_storage:
+        conversation_storage[conversation_id] = {
+            "messages": [], "user_id": user_id, "last_activity": time.time()
+        }
+    conv = conversation_storage[conversation_id]
+    conv["messages"].append({"role": role, "content": content})
+    conv["last_activity"] = time.time()
+    if len(conv["messages"]) > MAX_CONVERSATION_HISTORY:
+        conv["messages"] = conv["messages"][-MAX_CONVERSATION_HISTORY:]
+
+# ---------------------------------------------------------------------------
+# System prompt
+# ---------------------------------------------------------------------------
+SYSTEM_PROMPT_BASE = """Είσαι ο Autoanosis Assistant, ένας εξειδικευμένος βοηθός υγείας στα ελληνικά.
 Παρέχεις:
 - Ακριβείς και επιστημονικά τεκμηριωμένες πληροφορίες υγείας
 - Φιλικές και κατανοητές απαντήσεις
 - Υποστήριξη σε θέματα υγείας, φαρμάκων, συμπτωμάτων
-
 Σημαντικό:
 - ΔΕΝ αντικαθιστάς ιατρική συμβουλή
 - Συνιστάς πάντα επίσκεψη σε γιατρό για σοβαρά θέματα
 - Απαντάς στα ελληνικά"""
 
-def check_rate_limit(identifier: str) -> bool:
-    """Check if identifier has exceeded rate limit"""
-    current_time = time.time()
-    
-    # Clean old entries
-    rate_limit_storage[identifier] = [
-        t for t in rate_limit_storage[identifier] 
-        if current_time - t < RATE_LIMIT_WINDOW
-    ]
-    
-    # Check limit
-    if len(rate_limit_storage[identifier]) >= RATE_LIMIT_USER:
-        return False
-    
-    # Record this request
-    rate_limit_storage[identifier].append(current_time)
-    return True
+# ---------------------------------------------------------------------------
+# HMAC proxy signature verification (v5.1.0)
+# Canonical: TS.NONCE.RAW_BODY
+# ---------------------------------------------------------------------------
+def verify_proxy_signature(ts_str: str, nonce: str, raw_body: bytes, sig: str) -> tuple[bool, str]:
+    """Verify HMAC signature from WordPress chat-proxy."""
+    if not AUTOA_PROXY_SECRET:
+        # If no secret configured, skip verification (dev mode)
+        logger.warning("[PROXY] AUTOA_AI_PROXY_SECRET not set — skipping signature verification")
+        return True, "no_secret"
 
-def cleanup_old_conversations():
-    """Remove expired conversations"""
-    current_time = time.time()
-    expired = [
-        conv_id for conv_id, data in conversation_storage.items()
-        if current_time - data.get('last_activity', 0) > CONVERSATION_TTL
-    ]
-    for conv_id in expired:
-        del conversation_storage[conv_id]
-        logger.info(f"Cleaned up expired conversation: {conv_id}")
-
-def get_conversation_history(conversation_id: str) -> list:
-    """Get conversation history for context"""
-    if conversation_id not in conversation_storage:
-        return []
-    return conversation_storage[conversation_id].get('messages', [])
-
-def save_conversation_message(conversation_id: str, user_id: int, role: str, content: str):
-    """Save message to conversation history"""
-    if conversation_id not in conversation_storage:
-        conversation_storage[conversation_id] = {
-            'messages': [],
-            'user_id': user_id,
-            'last_activity': time.time()
-        }
-    
-    conv = conversation_storage[conversation_id]
-    conv['messages'].append({'role': role, 'content': content})
-    conv['last_activity'] = time.time()
-    
-    # Keep only last N messages
-    if len(conv['messages']) > MAX_CONVERSATION_HISTORY:
-        conv['messages'] = conv['messages'][-MAX_CONVERSATION_HISTORY:]
-
-def fetch_medical_context_from_wordpress(user_id: int) -> dict:
-    """
-    Fetch medical context from WordPress Aggregator API
-    
-    Uses server-to-server bot endpoint: POST /wp-json/autoanosis/v1/bot/medical-context
-    """
-    if not WORDPRESS_API_ENABLED or not WORDPRESS_API_KEY:
-        logger.warning("WordPress API disabled or no API key configured")
-        return None
-    
     try:
-        url = f"{WORDPRESS_URL}/wp-json/autoanosis/v1/bot/medical-context"
-        headers = {
-            "X-API-Key": WORDPRESS_API_KEY,
-            "Content-Type": "application/json"
-        }
-        payload = {"user_id": user_id}
-        
-        logger.info(f"Fetching medical context from WordPress for user {user_id}")
-        
-        response = requests.post(url, json=payload, headers=headers, timeout=10)
-        
-        if response.status_code == 200:
-            data = response.json()
-            logger.info(f"Successfully fetched medical context for user {user_id}")
-            return normalize_wordpress_response(data)
-        elif response.status_code == 401:
-            logger.error("WordPress API authentication failed - check API key")
-            return None
-        elif response.status_code == 400:
-            logger.error(f"WordPress API bad request: {response.text}")
-            return None
-        else:
-            logger.error(f"WordPress API error {response.status_code}: {response.text}")
-            return None
-            
-    except requests.exceptions.Timeout:
-        logger.error("WordPress API request timeout")
-        return None
-    except requests.exceptions.ConnectionError:
-        logger.error("WordPress API connection error")
-        return None
-    except Exception as e:
-        logger.error(f"WordPress API unexpected error: {str(e)}")
-        return None
+        ts = int(ts_str)
+    except (ValueError, TypeError):
+        return False, "invalid_ts"
 
-def normalize_wordpress_response(wp_data: dict) -> dict:
-    """Normalize WordPress API response to frontend schema
-    
-    WordPress API returns:
-    {
-      "subsystems": {
-        "medical_memory": {
-          "medications": [{"medication_name": "...", "dosage": "..."}]
-        }
-      },
-      "unified": {...}
-    }
-    
-    Frontend expects:
-    {
-      "autoanosis_medications": [{"name": "..."}],
-      "autoanosis_conditions": [...],
-      "autoanosis_allergies": [...]
-    }
+    now = int(time.time())
+    if abs(now - ts) > PROXY_TS_TOLERANCE:
+        return False, f"ts_expired (delta={abs(now - ts)}s)"
+
+    canonical = f"{ts}.{nonce}.{raw_body.decode('utf-8', errors='replace')}"
+    expected = _hmac.new(
+        AUTOA_PROXY_SECRET.encode("utf-8"),
+        canonical.encode("utf-8"),
+        hashlib.sha256
+    ).hexdigest()
+
+    if not _hmac.compare_digest(expected, sig):
+        return False, "sig_mismatch"
+
+    return True, "ok"
+
+# ---------------------------------------------------------------------------
+# Medical context extraction from wp_context (v5.1.0)
+# Handles both aggregator REST shape and ai-context-builder shape
+# ---------------------------------------------------------------------------
+def extract_context_from_wp_push(wp_context: dict) -> str:
     """
-    if not isinstance(wp_data, dict):
-        return {}
-    
-    normalized = {}
-    
-    # Extract medications from subsystems.medical_memory.medications
-    subsystems = wp_data.get('subsystems', {})
-    if isinstance(subsystems, dict):
-        medical_memory = subsystems.get('medical_memory', {})
-        if isinstance(medical_memory, dict):
-            medications = medical_memory.get('medications', [])
-            if isinstance(medications, list) and len(medications) > 0:
-                # Transform to frontend schema
-                normalized['autoanosis_medications'] = [
-                    {'name': med.get('medication_name', ''), 'dosage': med.get('dosage', '')}
-                    for med in medications
-                    if isinstance(med, dict) and med.get('medication_name')
-                ]
-    
-    # Try unified as fallback (if subsystems is empty)
-    if not normalized.get('autoanosis_medications'):
-        unified = wp_data.get('unified', {})
-        if isinstance(unified, dict):
-            # Check if unified has medications
-            unified_meds = unified.get('medications', [])
-            if isinstance(unified_meds, list) and len(unified_meds) > 0:
-                normalized['autoanosis_medications'] = unified_meds
-            
-            # Conditions and allergies from unified
-            if unified.get('conditions'):
-                normalized['autoanosis_conditions'] = unified.get('conditions')
-            if unified.get('allergies'):
-                normalized['autoanosis_allergies'] = unified.get('allergies')
-            
-            # Medical memory (summary text) from unified
-            if unified.get('medical_memory'):
-                normalized['autoanosis_medical_memory'] = unified.get('medical_memory')
-            
-            # BEST protocol (structured data) from unified
-            if unified.get('best_protocol'):
-                normalized['autoanosis_best_protocol'] = unified.get('best_protocol')
-    
-    return normalized
+    Extract a formatted medical context string from the wp_context dict
+    pushed by the WordPress chat-proxy.
 
-def build_medical_context(medical_snapshot: dict) -> str:
-    """Build medical context string from snapshot"""
-    if not medical_snapshot or not isinstance(medical_snapshot, dict):
+    Handles two shapes:
+    Shape A: Aggregator REST response (autoanosis/v1/bot/medical-context)
+      { "context_text": "...", "data": {...}, "unified": {...} }
+    Shape B: Autoa_AI_Context_Builder::build_context() output
+      { "user_profile": {...}, "health_data": {...}, "recent_checkins": {...}, ... }
+    """
+    if not wp_context or not isinstance(wp_context, dict):
         return ""
-    
-    context_parts = []
-    
-    # Medications
-    meds = medical_snapshot.get('autoanosis_medications')
-    if meds and isinstance(meds, list) and len(meds) > 0:
-        med_names = [m.get('name', '') for m in meds if isinstance(m, dict) and m.get('name')]
+
+    # Shape A: pre-formatted context_text
+    ct = wp_context.get("context_text")
+    if isinstance(ct, str) and ct.strip():
+        return ct.strip()
+
+    # Shape A: nested data.context_text
+    inner = wp_context.get("data") or {}
+    if isinstance(inner, dict):
+        ct = inner.get("context_text")
+        if isinstance(ct, str) and ct.strip():
+            return ct.strip()
+
+    # Shape A: unified snapshot
+    unified = wp_context.get("unified") or (inner.get("unified") if isinstance(inner, dict) else {}) or {}
+    if isinstance(unified, dict) and unified:
+        return build_medical_context_from_aggregator(unified)
+
+    # Shape B: Autoa_AI_Context_Builder output
+    if "user_profile" in wp_context or "health_data" in wp_context:
+        return build_medical_context_from_builder(wp_context)
+
+    # Shape C: helpers.php autoa_rest_chat_proxy snapshot
+    # Keys: user_id, user_name, autoimmune_type, diet_pref, health_info,
+    #        health_profile, recent_checkins, medications, recent_symptoms,
+    #        health_tracking, test_results, health_notes, medication_reminders
+    if any(k in wp_context for k in ("health_info", "autoimmune_type", "user_name", "recent_checkins", "medications", "best_protocol")):
+        return build_medical_context_from_helpers_snapshot(wp_context)
+
+    # Shape A fallback: try treating the whole dict as aggregator snapshot
+    return build_medical_context_from_aggregator(wp_context)
+
+
+def build_medical_context_from_helpers_snapshot(snap: dict) -> str:
+    """Build context string from helpers.php autoa_rest_chat_proxy snapshot."""
+    if not snap or not isinstance(snap, dict):
+        return ""
+
+    parts = []
+
+    # User name
+    name = snap.get("user_name")
+    if name:
+        parts.append(f"Όνομα: {name}")
+
+    # Autoimmune condition
+    cond = snap.get("autoimmune_type")
+    if cond:
+        parts.append(f"Αυτοάνοση πάθηση: {cond}")
+
+    # Diet preference
+    diet = snap.get("diet_pref")
+    if diet:
+        parts.append(f"Διατροφή: {diet}")
+
+    # Health info (free text — medication history etc.)
+    health_info = snap.get("health_info")
+    if health_info and isinstance(health_info, str) and health_info.strip():
+        parts.append(f"Ιστορικό φαρμάκων / Υγεία: {health_info.strip()}")
+
+    # Current medications from table
+    meds = snap.get("medications") or []
+    if isinstance(meds, list) and meds:
+        med_names = []
+        for m in meds:
+            if isinstance(m, dict):
+                n = m.get("medication_name") or m.get("name") or m.get("drug_name") or ""
+                dose = m.get("dosage") or m.get("dose") or ""
+                if n:
+                    med_names.append(f"{n} {dose}".strip())
         if med_names:
-            context_parts.append(f"Φάρμακα που παίρνει: {', '.join(med_names)}")
-    
-    # Conditions
-    conditions = medical_snapshot.get('autoanosis_conditions')
-    if conditions and isinstance(conditions, list) and len(conditions) > 0:
-        cond_names = [c.get('name', '') for c in conditions if isinstance(c, dict) and c.get('name')]
-        if cond_names:
-            context_parts.append(f"Παθήσεις: {', '.join(cond_names)}")
-    
-    # Allergies
-    allergies = medical_snapshot.get('autoanosis_allergies')
-    if allergies and isinstance(allergies, list) and len(allergies) > 0:
-        allergy_names = [a.get('name', '') for a in allergies if isinstance(a, dict) and a.get('name')]
-        if allergy_names:
-            context_parts.append(f"Αλλεργίες: {', '.join(allergy_names)}")
-    
-    # Medical Memory (summary text from WordPress)
-    memory = medical_snapshot.get('autoanosis_medical_memory')
-    if memory:
-        # medical_memory is a string (summary), not a list
-        if isinstance(memory, str) and memory.strip():
-            context_parts.append(f"📝 Προετοιμασία Ραντεβού (B.E.S.T.):\n{memory}")
-        # Fallback: if it's a list (old format)
-        elif isinstance(memory, list) and len(memory) > 0:
-            recent = memory[:3]
-            notes = [m.get('note', '') for m in recent if isinstance(m, dict) and m.get('note')]
-            if notes:
-                context_parts.append(f"Πρόσφατες σημειώσεις: {'; '.join(notes)}")
-    
-    # BEST Protocol (structured data)
-    best = medical_snapshot.get('autoanosis_best_protocol')
-    if best and isinstance(best, dict):
-        # Extract key BEST fields
-        best_parts = []
-        if best.get('visit_doctor'):
-            best_parts.append(f"Ιατρός: {best['visit_doctor']}")
-        if best.get('visit_goal'):
-            best_parts.append(f"Στόχος επίσκεψης: {best['visit_goal']}")
-        if best.get('b_labs'):
-            best_parts.append(f"Baseline εξετάσεις: {best['b_labs']}")
-        if best.get('e_infections') or best.get('e_stress'):
-            events = []
-            if best.get('e_infections'): events.append(f"Λοιμώξεις: {best['e_infections']}")
-            if best.get('e_stress'): events.append(f"Stress: {best['e_stress']}")
-            best_parts.append(f"Events: {', '.join(events)}")
-        
-        if best_parts:
-            # Only add if we didn't already add medical_memory summary
-            if not any('B.E.S.T.' in part for part in context_parts):
-                context_parts.append("📊 BEST Protocol:\n" + "\n".join(best_parts))
-    
-    if not context_parts:
-        return ""
-    
-    return "\n\n📋 ΠΡΟΣΩΠΙΚΑ ΙΑΤΡΙΚΑ ΔΕΔΟΜΕΝΑ ΧΡΗΣΤΗ:\n" + "\n".join(context_parts) + "\n\nΧρησιμοποίησε αυτά τα στοιχεία για να δώσεις προσωποποιημένες απαντήσεις."
+            parts.append(f"Τρέχοντα φάρμακα: {', '.join(med_names)}")
 
+    # Recent check-ins
+    checkins = snap.get("recent_checkins") or []
+    if isinstance(checkins, list) and checkins:
+        ci_lines = []
+        for ci in checkins[:5]:
+            if isinstance(ci, dict):
+                d = ci.get("checkin_date", "")
+                pain = ci.get("pain_level", "")
+                fatigue = ci.get("fatigue_level", "")
+                energy = ci.get("energy_level", "")
+                mood = ci.get("mood_level", "")
+                notes = ci.get("notes", "")
+                line = f"{d}: πόνος={pain}, κόπωση={fatigue}, ενέργεια={energy}, διάθεση={mood}"
+                if notes:
+                    line += f", σημ.: {notes[:60]}"
+                ci_lines.append(line)
+        if ci_lines:
+            parts.append("Πρόσφατα check-ins:\n" + "\n".join(ci_lines))
+
+    # Recent symptoms
+    symptoms = snap.get("recent_symptoms") or []
+    if isinstance(symptoms, list) and symptoms:
+        sym_names = []
+        for s in symptoms[:5]:
+            if isinstance(s, dict):
+                sn = s.get("symptom_name") or s.get("name") or s.get("symptom") or ""
+                if sn:
+                    sym_names.append(sn)
+        if sym_names:
+            parts.append(f"Πρόσφατα συμπτώματα: {', '.join(sym_names)}")
+
+    # Health profile table
+    hp = snap.get("health_profile")
+    if isinstance(hp, dict) and hp:
+        hp_parts = []
+        for k, v in hp.items():
+            if v and k not in ("id", "user_id", "created_at", "updated_at"):
+                hp_parts.append(f"{k}: {v}")
+        if hp_parts:
+            parts.append("Προφίλ υγείας: " + ", ".join(hp_parts[:8]))
+
+    # BEST Protocol (from autoanosis_medical_snapshot_last)
+    best = snap.get("best_protocol") or snap.get("autoanosis_best_protocol")
+    if best and isinstance(best, dict):
+        bp = []
+        if best.get("visit_doctor"): bp.append(f"Ιατρός: {best['visit_doctor']}")
+        if best.get("visit_goal"):   bp.append(f"Στόχος επίσκεψης: {best['visit_goal']}")
+        if best.get("b_labs"):       bp.append(f"Baseline εξετάσεις: {best['b_labs']}")
+        if best.get("e_infections"): bp.append(f"Λοιμώξεις: {best['e_infections']}")
+        if best.get("e_stress"):     bp.append(f"Stress: {best['e_stress']}")
+        if best.get("s_symptoms"):   bp.append(f"Συμπτώματα: {best['s_symptoms']}")
+        if best.get("t_treatments"): bp.append(f"Θεραπείες: {best['t_treatments']}")
+        if bp:
+            parts.append("BEST Protocol (Προετοιμασία Ραντεβού):\n" + "\n".join(bp))
+
+    # Medical memory / BEST summary text
+    memory = snap.get("medical_memory") or snap.get("autoanosis_medical_memory")
+    if memory and isinstance(memory, str) and memory.strip():
+        if not any("BEST" in p for p in parts):
+            parts.append(f"Προετοιμασία Ραντεβού (B.E.S.T.):\n{memory.strip()}")
+
+    if not parts:
+        return ""
+
+    return (
+        "\n\nΠΡΟΣΩΠΙΚΑ ΙΑΤΡΙΚΑ ΔΕΔΟΜΕΝΑ ΧΡΗΣΤΗ:\n"
+        + "\n".join(parts)
+        + "\n\nΧρησιμοποίησε αυτά τα στοιχεία για να δώσεις προσωποποιημένες απαντήσεις."
+    )
+
+
+def build_medical_context_from_aggregator(snapshot: dict) -> str:
+    """Build context string from aggregator snapshot dict."""
+    if not snapshot or not isinstance(snapshot, dict):
+        return ""
+
+    parts = []
+
+    meds = snapshot.get("autoanosis_medications") or snapshot.get("medications") or []
+    if isinstance(meds, list) and meds:
+        names = [m.get("name") or m.get("medication_name", "") for m in meds if isinstance(m, dict)]
+        names = [n for n in names if n]
+        if names:
+            parts.append(f"Φάρμακα: {', '.join(names)}")
+
+    conds = snapshot.get("autoanosis_conditions") or snapshot.get("conditions") or []
+    if isinstance(conds, list) and conds:
+        names = [c.get("name", "") for c in conds if isinstance(c, dict) and c.get("name")]
+        if names:
+            parts.append(f"Παθήσεις: {', '.join(names)}")
+
+    allergies = snapshot.get("autoanosis_allergies") or snapshot.get("allergies") or []
+    if isinstance(allergies, list) and allergies:
+        names = [a.get("name", "") for a in allergies if isinstance(a, dict) and a.get("name")]
+        if names:
+            parts.append(f"Αλλεργίες: {', '.join(names)}")
+
+    memory = snapshot.get("autoanosis_medical_memory") or snapshot.get("medical_memory")
+    if memory:
+        if isinstance(memory, str) and memory.strip():
+            parts.append(f"Προετοιμασία Ραντεβού (B.E.S.T.):\n{memory}")
+        elif isinstance(memory, list):
+            notes = [m.get("note", "") for m in memory[:3] if isinstance(m, dict) and m.get("note")]
+            if notes:
+                parts.append(f"Σημειώσεις: {'; '.join(notes)}")
+
+    best = snapshot.get("autoanosis_best_protocol") or snapshot.get("best_protocol")
+    if best and isinstance(best, dict):
+        bp = []
+        if best.get("visit_doctor"): bp.append(f"Ιατρός: {best['visit_doctor']}")
+        if best.get("visit_goal"):   bp.append(f"Στόχος: {best['visit_goal']}")
+        if best.get("b_labs"):       bp.append(f"Baseline: {best['b_labs']}")
+        if best.get("e_infections"): bp.append(f"Λοιμώξεις: {best['e_infections']}")
+        if best.get("e_stress"):     bp.append(f"Stress: {best['e_stress']}")
+        if bp and not any("B.E.S.T." in p for p in parts):
+            parts.append("BEST Protocol:\n" + "\n".join(bp))
+
+    if not parts:
+        return ""
+
+    return (
+        "\n\nΠΡΟΣΩΠΙΚΑ ΙΑΤΡΙΚΑ ΔΕΔΟΜΕΝΑ ΧΡΗΣΤΗ:\n"
+        + "\n".join(parts)
+        + "\n\nΧρησιμοποίησε αυτά τα στοιχεία για να δώσεις προσωποποιημένες απαντήσεις."
+    )
+
+
+def build_medical_context_from_builder(ctx: dict) -> str:
+    """Build context string from Autoa_AI_Context_Builder::build_context() output."""
+    if not ctx or not isinstance(ctx, dict):
+        return ""
+
+    parts = []
+
+    profile = ctx.get("user_profile") or {}
+    if isinstance(profile, dict):
+        if profile.get("condition"):
+            parts.append(f"Πάθηση: {profile['condition']}")
+        if profile.get("name"):
+            parts.append(f"Χρήστης: {profile['name']}")
+
+    health = ctx.get("health_data") or {}
+    if isinstance(health, dict):
+        if health.get("health_information"):
+            parts.append(f"Πληροφορίες Υγείας:\n{health['health_information']}")
+        symptoms = health.get("symptoms")
+        if symptoms:
+            if isinstance(symptoms, list):
+                parts.append(f"Συμπτώματα: {', '.join(str(s) for s in symptoms)}")
+            elif isinstance(symptoms, str) and symptoms.strip():
+                parts.append(f"Συμπτώματα: {symptoms}")
+
+    checkins = ctx.get("recent_checkins") or {}
+    if isinstance(checkins, dict) and checkins.get("averages"):
+        avg = checkins["averages"]
+        parts.append(
+            f"Μέσοι όροι τελευταίων ημερών — "
+            f"Πόνος: {avg.get('pain','?')}/10, "
+            f"Κόπωση: {avg.get('fatigue','?')}/10, "
+            f"Ενέργεια: {avg.get('energy','?')}/10, "
+            f"Διάθεση: {avg.get('mood','?')}/10"
+        )
+        trend_map = {"improving": "βελτιώνονται", "worsening": "επιδεινώνονται", "stable": "σταθερά"}
+        trend = checkins.get("trend")
+        if trend and trend in trend_map:
+            parts.append(f"Τάση: Τα συμπτώματα {trend_map[trend]}")
+
+    meds = ctx.get("medications") or {}
+    if isinstance(meds, dict):
+        current = meds.get("current_medications") or []
+        if isinstance(current, list) and current:
+            med_names = []
+            for m in current:
+                if isinstance(m, dict) and m.get("name"):
+                    med_names.append(m["name"] + (f" ({m['dosage']})" if m.get("dosage") else ""))
+                elif isinstance(m, str):
+                    med_names.append(m)
+            if med_names:
+                parts.append(f"Φάρμακα: {', '.join(med_names)}")
+
+    lifestyle = ctx.get("lifestyle") or {}
+    if isinstance(lifestyle, dict):
+        if lifestyle.get("diet_plan"):
+            parts.append(f"Διατροφή: {lifestyle['diet_plan']}")
+        triggers = lifestyle.get("trigger_foods")
+        if triggers:
+            if isinstance(triggers, list):
+                parts.append(f"Τρόφιμα που επιδεινώνουν: {', '.join(str(t) for t in triggers)}")
+            elif isinstance(triggers, str) and triggers.strip():
+                parts.append(f"Τρόφιμα που επιδεινώνουν: {triggers}")
+        if lifestyle.get("stress_level"):
+            parts.append(f"Επίπεδο στρες: {lifestyle['stress_level']}/10")
+
+    if not parts:
+        return ""
+
+    return (
+        "\n\nΠΡΟΣΩΠΙΚΑ ΙΑΤΡΙΚΑ ΔΕΔΟΜΕΝΑ ΧΡΗΣΤΗ:\n"
+        + "\n".join(parts)
+        + "\n\nΧρησιμοποίησε αυτά τα στοιχεία για να δώσεις προσωποποιημένες απαντήσεις."
+    )
+
+# ---------------------------------------------------------------------------
+# Health check
+# ---------------------------------------------------------------------------
 @app.route('/health', methods=['GET'])
 def health_check():
-    """Enhanced health check with WordPress API reachability test
-    
-    Returns:
-    - 200: All systems operational (including WordPress API if enabled)
-    - 503: Critical failure (WordPress API unreachable when enabled)
-    """
-    health_status = {
+    return jsonify({
         "status": "healthy",
         "service": "autoanosis-ai-backend",
-        "version": "4.1.0",
+        "version": "5.5.0",
         "timestamp": datetime.utcnow().isoformat() + "Z",
+        "architecture": "wp_push",
         "features": [
-            "wordpress_api_integration",
-            "unified_medical_context",
-            "fail_safe_medical_access",
-            "production_security_hardening",
+            "wp_push_context",
+            "proxy_hmac_verification",
             "session_memory",
             "rate_limiting",
             "audit_logging"
         ],
         "config": {
-            "wordpress_api_enabled": WORDPRESS_API_ENABLED,
-            "wordpress_api_url": WORDPRESS_URL if WORDPRESS_API_ENABLED else None,
-            "allow_frontend_snapshot": ALLOW_FRONTEND_SNAPSHOT,
-            "security_level": "production" if not ALLOW_FRONTEND_SNAPSHOT else "development"
-        },
-        "checks": {
-            "env_vars": True,  # If we got here, critical env vars are loaded
-            "wordpress_api": None
+            "proxy_secret_configured": bool(AUTOA_PROXY_SECRET),
         }
-    }
-    
-    # Test WordPress API reachability if enabled
-    if WORDPRESS_API_ENABLED:
-        try:
-            # Lightweight ping to WordPress API (no user data)
-            url = f"{WORDPRESS_URL}"
-            headers = {"X-API-Key": WORDPRESS_API_KEY}
-            # Use a test user_id that should always exist (admin user_id=1)
-            payload = {"user_id": 1}
-            
-            response = requests.post(url, json=payload, headers=headers, timeout=5)
-            
-            if response.status_code == 200:
-                health_status["checks"]["wordpress_api"] = {
-                    "status": "reachable",
-                    "latency_ms": int(response.elapsed.total_seconds() * 1000)
-                }
-            elif response.status_code == 401:
-                # API key issue - critical failure
-                health_status["status"] = "unhealthy"
-                health_status["checks"]["wordpress_api"] = {
-                    "status": "auth_failed",
-                    "error": "WordPress API authentication failed - check API key"
-                }
-                logger.error("Health check: WordPress API authentication failed")
-                return jsonify(health_status), 503
-            else:
-                # Other error - critical failure
-                health_status["status"] = "unhealthy"
-                health_status["checks"]["wordpress_api"] = {
-                    "status": "error",
-                    "http_status": response.status_code,
-                    "error": f"WordPress API returned {response.status_code}"
-                }
-                logger.error(f"Health check: WordPress API error {response.status_code}")
-                return jsonify(health_status), 503
-                
-        except requests.exceptions.Timeout:
-            health_status["status"] = "unhealthy"
-            health_status["checks"]["wordpress_api"] = {
-                "status": "timeout",
-                "error": "WordPress API request timeout (5s)"
-            }
-            logger.error("Health check: WordPress API timeout")
-            return jsonify(health_status), 503
-            
-        except requests.exceptions.ConnectionError:
-            health_status["status"] = "unhealthy"
-            health_status["checks"]["wordpress_api"] = {
-                "status": "unreachable",
-                "error": "WordPress API connection error"
-            }
-            logger.error("Health check: WordPress API connection error")
-            return jsonify(health_status), 503
-            
-        except Exception as e:
-            health_status["status"] = "unhealthy"
-            health_status["checks"]["wordpress_api"] = {
-                "status": "error",
-                "error": f"Unexpected error: {str(e)}"
-            }
-            logger.error(f"Health check: WordPress API unexpected error: {str(e)}")
-            return jsonify(health_status), 503
-    else:
-        health_status["checks"]["wordpress_api"] = {
-            "status": "disabled",
-            "note": "WordPress API integration is not enabled"
-        }
-    
-    return jsonify(health_status), 200
+    }), 200
 
+# ---------------------------------------------------------------------------
+# Chat endpoint (v5.1.0 — WP PUSH)
+# ---------------------------------------------------------------------------
 @app.route('/chat', methods=['POST'])
 def chat():
-    # Cleanup old conversations periodically
     if len(conversation_storage) > 100:
         cleanup_old_conversations()
-    
+
+    # --- Verify proxy HMAC signature ---
+    raw_body = request.get_data()
+    ts_str   = request.headers.get("X-Autoa-Proxy-TS", "")
+    nonce    = request.headers.get("X-Autoa-Proxy-Nonce", "")
+    sig      = request.headers.get("X-Autoa-Proxy-Sig", "")
+
+    if ts_str or nonce or sig:
+        # Signature headers present — verify them
+        ok, reason = verify_proxy_signature(ts_str, nonce, raw_body, sig)
+        if not ok:
+            logger.warning(f"[PROXY] Signature verification failed: {reason}")
+            return jsonify({"error": f"Invalid proxy signature: {reason}"}), 403
+        logger.info(f"[PROXY] Signature verified: {reason}")
+    else:
+        logger.warning("[PROXY] No signature headers — request not from WP proxy")
+
     data = request.json
+    if not data:
+        return jsonify({"error": "No JSON body"}), 400
+
     user_message = data.get("message")
     if not user_message:
         return jsonify({"error": "No message provided"}), 400
 
-    # Get user_id from identity_token (Token Bridge)
+    # --- Authenticate user ---
     user_id = None
     identity_token = data.get("identity_token")
-    
     if identity_token:
         is_valid, payload, error = verify_identity_token(identity_token)
         if is_valid and payload:
             user_id = payload.get("uid")
-            logger.info(f"User authenticated via identity token: {user_id}")
+            logger.info(f"[AUTH] User authenticated: {user_id}")
         else:
-            logger.warning(f"Identity token verification failed: {error}")
+            logger.warning(f"[AUTH] Identity token failed: {error}")
             return jsonify({"error": "Invalid identity token"}), 401
     else:
-        logger.warning("No identity token provided")
+        logger.warning("[AUTH] No identity token provided")
         return jsonify({"error": "Identity token required"}), 401
-    
-    # Rate limiting (per user)
-    rate_limit_key = f"user_{user_id}"
-    if not check_rate_limit(rate_limit_key):
+
+    # --- Rate limit ---
+    if not check_rate_limit(f"user_{user_id}"):
         return jsonify({"error": "Rate limit exceeded. Please try again later."}), 429
 
-    # Get conversation ID
+    # --- Conversation ID ---
     conversation_id = data.get("conversation_id")
     if not conversation_id:
         conversation_id = f"conv_{int(time.time())}_{uuid.uuid4().hex[:8]}"
-        logger.info(f"Generated new conversation ID: {conversation_id}")
 
-    # Build system prompt with medical snapshot (if available)
-    # Production-safe: WordPress API as source of truth
+    # --- Extract medical context from wp_context or medical_snapshot (WP PUSH) ---
+    # WordPress helpers.php sends key 'medical_snapshot'; chat-proxy-endpoint.php sends 'wp_context'
+    wp_context = data.get("wp_context") or data.get("medical_snapshot")
     snapshot = ""
     snapshot_source = "none"
-    start_time = time.time()
-    wordpress_api_success = False
-    
-    # 1. Try WordPress Aggregator API (source of truth)
-    if WORDPRESS_API_ENABLED:
-        wordpress_context = fetch_medical_context_from_wordpress(user_id)
-        if wordpress_context is not None:  # API call succeeded (even if empty data)
-            wordpress_api_success = True
-            snapshot = build_medical_context(wordpress_context)
-            snapshot_source = "wordpress_api"
-            latency_ms = int((time.time() - start_time) * 1000)
-            if snapshot:
-                logger.info(f"Using WordPress API medical context for user {user_id} (latency: {latency_ms}ms)")
-            else:
-                logger.info(f"WordPress API returned empty medical context for user {user_id} (latency: {latency_ms}ms)")
-    
-    # 2. Frontend snapshot fallback (ONLY if explicitly enabled AND WordPress API failed)
-    # Production default: ALLOW_FRONTEND_SNAPSHOT=false (fail-safe)
-    if not wordpress_api_success and ALLOW_FRONTEND_SNAPSHOT:
-        frontend_snapshot = data.get("medical_snapshot") or data.get("snapshot")
-        if frontend_snapshot:
-            snapshot = build_medical_context(frontend_snapshot)
-            snapshot_source = "frontend_snapshot"
-            logger.warning(f"Using frontend snapshot for user {user_id} (fallback enabled)")
-    
-    # 3. Fail safely ONLY if WordPress API is enabled but failed to respond
-    if WORDPRESS_API_ENABLED and not wordpress_api_success:
-        logger.error(f"WordPress API failed for user {user_id} (wordpress_api_enabled={WORDPRESS_API_ENABLED})")
-        return jsonify({
-            "error": "medical_context_unavailable",
-            "reply": "Δεν μπορώ να ανακτήσω με ασφάλεια το ιατρικό σου πλαίσιο αυτή τη στιγμή. Παρακαλώ δοκίμασε ξανά σε λίγο."
-        }), 503
-    
-    if snapshot:
-        # FORCE AI to acknowledge and use the medical snapshot
-        system_prompt = f"""Είσαι ο Autoanosis Assistant, ένας εξειδικευμένος βοηθός υγείας στα ελληνικά.
 
+    if isinstance(wp_context, dict):
+        ctx_key_used = "wp_context" if data.get("wp_context") else "medical_snapshot"
+        logger.info(f"[CTX] received {ctx_key_used} keys={list(wp_context.keys())[:10]}")
+        snapshot = extract_context_from_wp_push(wp_context)
+        if snapshot:
+            snapshot_source = "wp_push"
+            context_bytes = len(snapshot.encode("utf-8"))
+            logger.info(
+                f"[CONTEXT] user={user_id} source={snapshot_source} "
+                f"context_bytes={context_bytes} prompt_injected=true"
+            )
+        else:
+            logger.warning(f"[CONTEXT] context present but empty after extraction for user={user_id} keys={list(wp_context.keys())[:10]}")
+    else:
+        logger.warning(f"[CTX] no context received — type={type(wp_context).__name__} user={user_id} body_keys={list(data.keys())}")
+
+    # --- Build system prompt ---
+    if snapshot:
+        system_prompt = f"""Είσαι ο Autoanosis Assistant, ένας εξειδικευμένος βοηθός υγείας στα ελληνικά.
 Παρέχεις:
 - Ακριβείς και επιστημονικά τεκμηριωμένες πληροφορίες υγείας
 - Φιλικές και κατανοητές απαντήσεις
 - Υποστήριξη σε θέματα υγείας, φαρμάκων, συμπτωμάτων
-
 Σημαντικό:
 - ΔΕΝ αντικαθιστάς ιατρική συμβουλή
 - Συνιστάς πάντα επίσκεψη σε γιατρό για σοβαρά θέματα
 - Απαντάς στα ελληνικά
-
-📋 ΙΑΤΡΙΚΟ ΠΡΟΦΙΛ ΧΡΗΣΤΗ (ΥΠΟΧΡΕΩΤΙΚΗ ΧΡΗΣΗ):
+ΟΡΙΣΜΟΙ (ΚΡΙΣΙΜΟ):
+- Το B.E.S.T. στο Autoanosis είναι το δικό μας πρωτόκολλο προετοιμασίας ραντεβού (Baseline, Events, Symptoms, Targets). ΔΕΝ είναι εξέταση αίματος.
+- Αν δεν υπάρχει BEST πεδίο στο context, λες "Δεν έχει καταγραφεί ακόμα" — ΔΕΝ επινοείς.
+ΙΑΤΡΙΚΟ ΠΡΟΦΙΛ ΧΡΗΣΤΗ (ΥΠΟΧΡΕΩΤΙΚΗ ΧΡΗΣΗ):
 {snapshot}
-
-⚠️ ΚΑΝΟΝΕΣ:
+ΚΑΝΟΝΕΣ:
 - ΕΧΕΙΣ πρόσβαση στα παραπάνω ιατρικά δεδομένα και ΠΡΕΠΕΙ να τα χρησιμοποιείς
 - ΜΗΝ πεις ΠΟΤΕ "δεν έχω πρόσβαση" ή "δεν μπορώ να δω προσωπικά δεδομένα"
 - Αν κάτι λείπει από το προφίλ, πες "δεν εμφανίζεται στο προφίλ υγείας σου"
 - Χρησιμοποίησε το προφίλ ΜΟΝΟ όταν είναι σχετικό με την ερώτηση
 - ΜΟΝΟ τα δεδομένα που βλέπεις παραπάνω είναι αληθινά - τίποτα άλλο"""
-        logger.info(f"Medical snapshot FORCEFULLY injected for user {user_id}")
+        logger.info(f"[PROMPT] Medical context injected for user={user_id} source={snapshot_source}")
     else:
         system_prompt = SYSTEM_PROMPT_BASE
-        logger.info(f"No medical snapshot provided for user {user_id}")
+        logger.info(f"[PROMPT] No medical context for user={user_id} — base prompt used")
 
-    # Get conversation history
+    # --- Build messages ---
     history = get_conversation_history(conversation_id)
-    
-    # Build messages for OpenAI
     messages = [{"role": "system", "content": system_prompt}]
-    
-    # Add conversation history (last N messages)
     if history:
         messages.extend(history)
-        logger.info(f"Added {len(history)} messages from conversation history")
-    
-    # Add current user message
     messages.append({"role": "user", "content": user_message})
 
+    # --- Call OpenAI ---
     try:
         client = get_openai_client()
         response = client.chat.completions.create(
@@ -558,20 +609,18 @@ def chat():
             temperature=0.7
         )
         ai_response = response.choices[0].message.content
-        
-        # Save to conversation history
+
         save_conversation_message(conversation_id, user_id, "user", user_message)
         save_conversation_message(conversation_id, user_id, "assistant", ai_response)
-        
-        logger.info(f"Chat interaction: User={user_id}, Conversation={conversation_id}")
-        
-        return jsonify({
-            "reply": ai_response,
-            "conversation_id": conversation_id
-        })
+
+        logger.info(f"[CHAT] user={user_id} conv={conversation_id}")
+
+        return jsonify({"reply": ai_response, "conversation_id": conversation_id})
+
     except Exception as e:
-        logger.error(f"OpenAI Error: {e}")
+        logger.error(f"[OPENAI] error: {e}")
         return jsonify({"error": str(e)}), 500
+
 
 if __name__ == "__main__":
     app.run(host="0.0.0.0", port=10000)
