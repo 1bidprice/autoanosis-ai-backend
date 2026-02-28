@@ -1,9 +1,9 @@
-"""Autoanosis AI Backend v5.6.0"
+"""Autoanosis AI Backend v5.7.0"
 Professional Flask backend for AI Assistant with Medical Context
 Deployed on Render.com
 Changelog:
-v5.6.0 (2026-03-01) - Full medical data: ALL BEST fields + timestamps + test_results + health_notes + health_tracking + best_summary fallback
-v5.5.0 (2026-02-28) - Add BEST protocol support in helpers snapshot + best_protocol detection key
+v5.7.0 (2026-03-01) - Full medical data: ALL BEST fields + timestamps + test_results + health_notes + health_tracking + best_summary fallback
+v5.7.0 (2026-02-28) - Add BEST protocol support in helpers snapshot + best_protocol detection key
 v5.4.0 (2026-02-28) - Handle helpers.php snapshot structure (health_info, autoimmune_type, medications)
 v5.3.0 (2026-02-28) - Accept both wp_context and medical_snapshot keys from WordPress
 v5.2.0 (2026-02-28) - CTX logs, BEST system prompt fix, wp_context key logging
@@ -305,7 +305,7 @@ def build_medical_context_from_helpers_snapshot(snap: dict) -> str:
         if hp_parts:
             parts.append("Προφίλ υγείας: " + ", ".join(hp_parts[:8]))
 
-    # BEST Protocol (from autoanosis_medical_snapshot_last) — ALL FIELDS v5.6.0
+    # BEST Protocol (from autoanosis_medical_snapshot_last) — ALL FIELDS v5.7.0
     best = snap.get("best_protocol") or snap.get("autoanosis_best_protocol")
     if best and isinstance(best, dict):
         bp = []
