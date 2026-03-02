@@ -1,7 +1,9 @@
-"""Autoanosis AI Backend v5.8.0"
+"""Autoanosis AI Backend v5.9.0"
 Professional Flask backend for AI Assistant with Medical Context
 Deployed on Render.com
 Changelog:
+v5.9.0 (2026-03-02) - Fix: Clear separation of BEST Protocol vs daily check-ins in system prompt and context labels
+v5.8.0 (2026-03-02) - Enhanced BEST Protocol parsing and search keys
 v5.7.0 (2026-03-01) - Full medical data: ALL BEST fields + timestamps + test_results + health_notes + health_tracking + best_summary fallback
 v5.7.0 (2026-02-28) - Add BEST protocol support in helpers snapshot + best_protocol detection key
 v5.4.0 (2026-02-28) - Handle helpers.php snapshot structure (health_info, autoimmune_type, medications)
@@ -140,7 +142,15 @@ SYSTEM_PROMPT_BASE = """Είσαι ο Autoanosis Assistant, ένας εξειδ�
 Σημαντικό:
 - ΔΕΝ αντικαθιστάς ιατρική συμβουλή
 - Συνιστάς πάντα επίσκεψη σε γιατρό για σοβαρά θέματα
-- Απαντάς στα ελληνικά"""
+- Απαντάς στα ελληνικά
+
+ΔΟΜΗ ΔΕΔΟΜΕΝΩΝ ΧΡΗΣΤΗ — ΚΑΤΑΝΟΗΣΕ ΤΗ ΔΙΑΦΟΡΑ:
+1. "Πρόσφατα check-ins" = Καθημερινό ημερολόγιο συμπτωμάτων (πόνος, κόπωση, ενέργεια, διάθεση). Είναι ΞΕΧΩΡΙΣΤΟ από το BEST Protocol.
+2. "BEST Protocol (Προετοιμασία Ραντεβού — B.E.S.T.)" = Δομημένη προετοιμασία για ιατρικό ραντεβού. Περιέχει: ημερομηνία ραντεβού, ιατρό, φάρμακα (B), γεγονότα (E), συμπτώματα BEST (S), στόχους (T). ΠΟΤΕ μην αναμιγνύεις αυτά τα δύο.
+3. "Αποτελέσματα Εξετάσεων" = Εργαστηριακές εξετάσεις με ημερομηνίες και τιμές.
+4. "Ιστορικό φαρμάκων / Υγεία" = Ελεύθερο κείμενο με ιστορικό θεραπειών.
+
+Όταν ο χρήστης ρωτά για το BEST, αναφέρσου ΜΟΝΟ στα δεδομένα από την ενότητα "BEST Protocol". Όταν ρωτά για check-ins ή ημερολόγιο, αναφέρσου ΜΟΝΟ στην ενότητα "Πρόσφατα check-ins"."""
 
 # ---------------------------------------------------------------------------
 # HMAC proxy signature verification (v5.1.0)
@@ -281,7 +291,7 @@ def build_medical_context_from_helpers_snapshot(snap: dict) -> str:
                     line += f", σημ.: {notes[:60]}"
                 ci_lines.append(line)
         if ci_lines:
-            parts.append("Πρόσφατα check-ins:\n" + "\n".join(ci_lines))
+            parts.append("Καθημερινό Ημερολόγιο Συμπτωμάτων (check-ins — ΞΕΧΩΡΙΣΤΟ ΑΠΟ BEST):\n" + "\n".join(ci_lines))
 
     # Recent symptoms
     symptoms = snap.get("recent_symptoms") or []
