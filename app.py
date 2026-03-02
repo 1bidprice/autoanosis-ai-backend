@@ -1,4 +1,4 @@
-"""Autoanosis AI Backend v5.7.0"
+"""Autoanosis AI Backend v5.8.0"
 Professional Flask backend for AI Assistant with Medical Context
 Deployed on Render.com
 Changelog:
@@ -305,8 +305,14 @@ def build_medical_context_from_helpers_snapshot(snap: dict) -> str:
         if hp_parts:
             parts.append("Προφίλ υγείας: " + ", ".join(hp_parts[:8]))
 
-    # BEST Protocol (from autoanosis_medical_snapshot_last) — ALL FIELDS v5.7.0
-    best = snap.get("best_protocol") or snap.get("autoanosis_best_protocol")
+    # BEST Protocol (from autoanosis_medical_snapshot_last) — ALL FIELDS v5.8.0
+    # Enhanced search for BEST data in various keys
+    best = snap.get("best_protocol") or snap.get("autoanosis_best_protocol") or snap.get("medical_snapshot")
+    
+    # If it's a list (sometimes happens in aggregator), take the first element if it looks like BEST
+    if isinstance(best, list) and best:
+        best = best[0]
+        
     if best and isinstance(best, dict):
         bp = []
         # Visit info
