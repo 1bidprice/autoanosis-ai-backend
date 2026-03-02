@@ -1,7 +1,8 @@
-"""Autoanosis AI Backend v5.10.0"
+"""Autoanosis AI Backend v5.11.0
 Professional Flask backend for AI Assistant with Medical Context
 Deployed on Render.com
 Changelog:
+v5.11.0 (2026-03-02) - BEST History: helpers.php stores rolling history (max 10), app.py displays all past entries with timestamps
 v5.10.0 (2026-03-02) - Fix: Correct BEST Protocol field names (b_adherence, b_notes, s_timeline, s_functional, t_qol) + symptoms table (s1/s2/s3)
 v5.9.0 (2026-03-02) - Fix: Clear separation of BEST Protocol vs daily check-ins in system prompt and context labels
 v5.8.0 (2026-03-02) - Enhanced BEST Protocol parsing and search keys
@@ -378,6 +379,42 @@ def build_medical_context_from_helpers_snapshot(snap: dict) -> str:
         if _ts:                       bp.append(f"[Ημ/νία καταχώρισης BEST: {_ts}]")
         if bp:
             parts.append("BEST Protocol (Προετοιμασία Ραντεβού — B.E.S.T.):\n" + "\n".join(bp))
+
+    # BEST History (all previous BEST entries, newest first) — v5.11.0
+    best_history = snap.get("best_history")
+    if best_history and isinstance(best_history, list) and len(best_history) > 1:
+        # Show history entries (skip index 0 = current, already shown above)
+        hist_lines = []
+        for idx, entry in enumerate(best_history[1:], start=1):
+            if not isinstance(entry, dict):
+                continue
+            ts_raw = entry.get("_saved_ts") or entry.get("ts") or entry.get("timestamp") or ""
+            ts_str = ""
+            if ts_raw:
+                try:
+                    ts_str = f" [{datetime.fromtimestamp(int(ts_raw)).strftime('%Y-%m-%d')}]"
+                except Exception:
+                    ts_str = f" [{ts_raw}]"
+            vd = entry.get("visit_date", "")
+            vdr = entry.get("visit_doctor", "")
+            vg = entry.get("visit_goal", "")
+            header = f"  Καταχώρηση #{idx}{ts_str}: Ραντεβού {vd} — {vdr}"
+            if vg: header += f" ({vg})"
+            hist_lines.append(header)
+            # Key fields only for history entries
+            if entry.get("b_meds"): hist_lines.append(f"    Φάρμακα: {entry['b_meds']}")
+            if entry.get("b_labs"): hist_lines.append(f"    Εξετάσεις: {entry['b_labs']}")
+            if entry.get("e_stress"): hist_lines.append(f"    Στρες: {entry['e_stress']}")
+            if entry.get("e_other"): hist_lines.append(f"    Άλλα: {entry['e_other']}")
+            # Symptoms
+            for i in [1, 2, 3]:
+                sn = entry.get(f"s{i}_name", "").strip()
+                sv = entry.get(f"s{i}_vas", "")
+                if sn: hist_lines.append(f"    Σύμπτωμα: {sn} VAS={sv}")
+            _t = entry.get("t_qol") or entry.get("t_goals")
+            if _t: hist_lines.append(f"    Στόχος: {_t}")
+        if hist_lines:
+            parts.append("Ιστορικό BEST (προηγούμενες καταχωρήσεις):\n" + "\n".join(hist_lines))
 
     # best_summary fallback (text version built by helpers.php)
     best_summary = snap.get("best_summary")
