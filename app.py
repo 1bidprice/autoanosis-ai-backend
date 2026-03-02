@@ -1,7 +1,8 @@
-"""Autoanosis AI Backend v5.11.0
+"""Autoanosis AI Backend v5.12.0
 Professional Flask backend for AI Assistant with Medical Context
 Deployed on Render.com
 Changelog:
+v5.12.0 (2026-03-02) - Fix: Show BEST history even with 1 entry (was > 1, now >= 1); show all entries from best_history
 v5.11.0 (2026-03-02) - BEST History: helpers.php stores rolling history (max 10), app.py displays all past entries with timestamps
 v5.10.0 (2026-03-02) - Fix: Correct BEST Protocol field names (b_adherence, b_notes, s_timeline, s_functional, t_qol) + symptoms table (s1/s2/s3)
 v5.9.0 (2026-03-02) - Fix: Clear separation of BEST Protocol vs daily check-ins in system prompt and context labels
@@ -380,12 +381,14 @@ def build_medical_context_from_helpers_snapshot(snap: dict) -> str:
         if bp:
             parts.append("BEST Protocol (Προετοιμασία Ραντεβού — B.E.S.T.):\n" + "\n".join(bp))
 
-    # BEST History (all previous BEST entries, newest first) — v5.11.0
+    # BEST History (all previous BEST entries, newest first) — v5.12.0
     best_history = snap.get("best_history")
-    if best_history and isinstance(best_history, list) and len(best_history) > 1:
-        # Show history entries (skip index 0 = current, already shown above)
-        hist_lines = []
-        for idx, entry in enumerate(best_history[1:], start=1):
+    if best_history and isinstance(best_history, list) and len(best_history) >= 1:
+        # Show ALL history entries with dates
+        # If best_protocol already shown (index 0), show remaining; if not shown, show all
+        hist_lines = [f"Σύνολο καταχωρήσεων BEST: {len(best_history)}"]
+        start_idx = 1 if any("BEST Protocol" in p for p in parts) else 0
+        for idx, entry in enumerate(best_history[start_idx:], start=start_idx + 1):
             if not isinstance(entry, dict):
                 continue
             ts_raw = entry.get("_saved_ts") or entry.get("ts") or entry.get("timestamp") or ""
@@ -413,8 +416,10 @@ def build_medical_context_from_helpers_snapshot(snap: dict) -> str:
                 if sn: hist_lines.append(f"    Σύμπτωμα: {sn} VAS={sv}")
             _t = entry.get("t_qol") or entry.get("t_goals")
             if _t: hist_lines.append(f"    Στόχος: {_t}")
-        if hist_lines:
-            parts.append("Ιστορικό BEST (προηγούμενες καταχωρήσεις):\n" + "\n".join(hist_lines))
+        if hist_lines and len(hist_lines) > 1:  # > 1 because first line is the count header
+            parts.append("Ιστορικό BEST (όλες οι καταχωρήσεις με ημερομηνίες):\n" + "\n".join(hist_lines))
+        elif hist_lines:  # only the count header, no entries (all already shown in best_protocol)
+            parts.append(f"Σύνολο BEST καταχωρήσεων: {len(best_history)} (η τρέχουσα εγγραφή εμφανίζεται παραπάνω)")
 
     # best_summary fallback (text version built by helpers.php)
     best_summary = snap.get("best_summary")
