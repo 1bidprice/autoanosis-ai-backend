@@ -1,7 +1,8 @@
-"""Autoanosis AI Backend v5.9.0"
+"""Autoanosis AI Backend v5.10.0"
 Professional Flask backend for AI Assistant with Medical Context
 Deployed on Render.com
 Changelog:
+v5.10.0 (2026-03-02) - Fix: Correct BEST Protocol field names (b_adherence, b_notes, s_timeline, s_functional, t_qol) + symptoms table (s1/s2/s3)
 v5.9.0 (2026-03-02) - Fix: Clear separation of BEST Protocol vs daily check-ins in system prompt and context labels
 v5.8.0 (2026-03-02) - Enhanced BEST Protocol parsing and search keys
 v5.7.0 (2026-03-01) - Full medical data: ALL BEST fields + timestamps + test_results + health_notes + health_tracking + best_summary fallback
@@ -332,21 +333,42 @@ def build_medical_context_from_helpers_snapshot(snap: dict) -> str:
         if best.get("visit_period"):  bp.append(f"Περίοδος αναφοράς: {best['visit_period']}")
         # B — Baseline
         if best.get("b_meds"):        bp.append(f"[B] Φάρμακα & δοσολογία: {best['b_meds']}")
-        if best.get("b_side"):        bp.append(f"[B] Συμμόρφωση & παρενέργειες: {best['b_side']}")
+        _b_adh = best.get("b_adherence") or best.get("b_side")
+        if _b_adh:                    bp.append(f"[B] Συμμόρφωση & παρενέργειες: {_b_adh}")
         if best.get("b_labs"):        bp.append(f"[B] Εξετάσεις εκτός ορίων: {best['b_labs']}")
-        if best.get("b_baseline"):    bp.append(f"[B] Σημειώσεις baseline (ύπνος/ενέργεια/πίεση): {best['b_baseline']}")
+        _b_notes = best.get("b_notes") or best.get("b_baseline")
+        if _b_notes:                  bp.append(f"[B] Σημειώσεις baseline (ύπνος/ενέργεια/πίεση): {_b_notes}")
         # E — Events
         if best.get("e_infections"):  bp.append(f"[E] Λοιμώξεις/Ιώσεις: {best['e_infections']}")
         if best.get("e_stress"):      bp.append(f"[E] Στρεσογόνα γεγονότα: {best['e_stress']}")
         _e_life = best.get("e_lifestyle") or best.get("e_events")
         if _e_life:                   bp.append(f"[E] Αλλαγές τρόπου ζωής: {_e_life}")
         if best.get("e_other"):       bp.append(f"[E] Άλλα συμβάντα: {best['e_other']}")
-        # S — Symptoms
-        if best.get("s_symptoms"):    bp.append(f"[S] Συμπτώματα (VAS 0-10): {best['s_symptoms']}")
-        if best.get("s_timing"):      bp.append(f"[S] Χρονική χαρτογράφηση: {best['s_timing']}")
-        if best.get("s_impact"):      bp.append(f"[S] Λειτουργικός αντίκτυπος: {best['s_impact']}")
+        # S — Symptoms (table: s1, s2, s3 + free text fields)
+        _s_rows = []
+        for i in [1, 2, 3]:
+            sn = best.get(f"s{i}_name", "").strip()
+            sv = best.get(f"s{i}_vas", "") 
+            sp = best.get(f"s{i}_peak", "").strip()
+            sw = best.get(f"s{i}_worse", "").strip()
+            sb = best.get(f"s{i}_better", "").strip()
+            if sn:
+                row = f"{sn} VAS={sv}"
+                if sp: row += f" | Ώρες αιχμής: {sp}"
+                if sw: row += f" | Χειροτερεύει: {sw}"
+                if sb: row += f" | Βελτιώνεται: {sb}"
+                _s_rows.append(row)
+        if _s_rows:
+            bp.append(f"[S] Συμπτώματα: " + " / ".join(_s_rows))
+        # Also check old flat s_symptoms field
+        if best.get("s_symptoms"):    bp.append(f"[S] Συμπτώματα (επιπλέον): {best['s_symptoms']}")
+        _s_tl = best.get("s_timeline") or best.get("s_timing")
+        if _s_tl:                     bp.append(f"[S] Χρονική χαρτογράφηση: {_s_tl}")
+        _s_fn = best.get("s_functional") or best.get("s_impact")
+        if _s_fn:                     bp.append(f"[S] Λειτουργικός αντίκτυπος: {_s_fn}")
         # T — Targets
-        if best.get("t_goals"):       bp.append(f"[T] Στόχοι ποιότητας ζωής: {best['t_goals']}")
+        _t_qol = best.get("t_qol") or best.get("t_goals")
+        if _t_qol:                    bp.append(f"[T] Στόχοι ποιότητας ζωής: {_t_qol}")
         if best.get("t_biomarkers"):  bp.append(f"[T] Στόχοι βιοδεικτών: {best['t_biomarkers']}")
         if best.get("t_questions"):   bp.append(f"[T] Ερωτήσεις προς ιατρό: {best['t_questions']}")
         _t_plan = best.get("t_plan") or best.get("t_treatments")
