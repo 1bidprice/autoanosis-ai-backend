@@ -1,7 +1,8 @@
-"""Autoanosis AI Backend v5.12.0
+"""Autoanosis AI Backend v5.13.0
 Professional Flask backend for AI Assistant with Medical Context
 Deployed on Render.com
 Changelog:
+v5.13.0 (2026-03-03) - Medical Memory integration: medications with time_slots, medication_schedule from mm_doses
 v5.12.0 (2026-03-02) - Fix: Show BEST history even with 1 entry (was > 1, now >= 1); show all entries from best_history
 v5.11.0 (2026-03-02) - BEST History: helpers.php stores rolling history (max 10), app.py displays all past entries with timestamps
 v5.10.0 (2026-03-02) - Fix: Correct BEST Protocol field names (b_adherence, b_notes, s_timeline, s_functional, t_qol) + symptoms table (s1/s2/s3)
@@ -264,18 +265,46 @@ def build_medical_context_from_helpers_snapshot(snap: dict) -> str:
     if health_info and isinstance(health_info, str) and health_info.strip():
         parts.append(f"Ιστορικό φαρμάκων / Υγεία: {health_info.strip()}")
 
-    # Current medications from table
+    # Current medications from Medical Memory plugin (with time_slots for scheduled reminders)
     meds = snap.get("medications") or []
     if isinstance(meds, list) and meds:
-        med_names = []
+        med_lines = []
         for m in meds:
             if isinstance(m, dict):
                 n = m.get("medication_name") or m.get("name") or m.get("drug_name") or ""
                 dose = m.get("dosage") or m.get("dose") or ""
+                freq = m.get("frequency") or ""
+                time_slots = m.get("time_slots") or []
+                notes = m.get("notes") or ""
                 if n:
-                    med_names.append(f"{n} {dose}".strip())
-        if med_names:
-            parts.append(f"Τρέχοντα φάρμακα: {', '.join(med_names)}")
+                    line = f"{n}"
+                    if dose:
+                        line += f" {dose}"
+                    if freq:
+                        line += f" ({freq})"
+                    if isinstance(time_slots, list) and time_slots:
+                        line += f" — ώρες λήψης: {', '.join(time_slots)}"
+                    elif isinstance(time_slots, str) and time_slots:
+                        line += f" — ώρες λήψης: {time_slots}"
+                    if notes:
+                        line += f" [{notes[:60]}]"
+                    med_lines.append(line)
+        if med_lines:
+            parts.append("Φάρμακα (Medical Memory):\n" + "\n".join(f"• {l}" for l in med_lines))
+    # Medication schedule (upcoming doses from mm_doses)
+    med_schedule = snap.get("medication_schedule") or []
+    if isinstance(med_schedule, list) and med_schedule:
+        sched_lines = []
+        for d in med_schedule[:10]:
+            if isinstance(d, dict):
+                med_name = d.get("medication_name") or ""
+                dose = d.get("dosage") or ""
+                due = d.get("due_at") or d.get("dose_date") or ""
+                status = d.get("status") or ""
+                if med_name and due:
+                    sched_lines.append(f"{due}: {med_name} {dose} [{status}]".strip())
+        if sched_lines:
+            parts.append("Πρόγραμμα Δόσεων (επόμενες):\n" + "\n".join(sched_lines))
 
     # Recent check-ins
     checkins = snap.get("recent_checkins") or []
