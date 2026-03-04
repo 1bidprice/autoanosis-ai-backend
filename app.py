@@ -1,8 +1,8 @@
-"""Autoanosis AI Backend v5.13.0
+"""Autoanosis AI Backend v5.14.0
 Professional Flask backend for AI Assistant with Medical Context
 Deployed on Render.com
 Changelog:
-v5.13.0 (2026-03-03) - Medical Memory integration: medications with time_slots, medication_schedule from mm_doses
+v5.14.0 (2026-03-03) - Medical Memory integration: medications with time_slots, medication_schedule from mm_doses
 v5.12.0 (2026-03-02) - Fix: Show BEST history even with 1 entry (was > 1, now >= 1); show all entries from best_history
 v5.11.0 (2026-03-02) - BEST History: helpers.php stores rolling history (max 10), app.py displays all past entries with timestamps
 v5.10.0 (2026-03-02) - Fix: Correct BEST Protocol field names (b_adherence, b_notes, s_timeline, s_functional, t_qol) + symptoms table (s1/s2/s3)
@@ -771,7 +771,11 @@ def chat():
 - ΜΗΝ πεις ΠΟΤΕ "δεν έχω πρόσβαση" ή "δεν μπορώ να δω προσωπικά δεδομένα"
 - Αν κάτι λείπει από το προφίλ, πες "δεν εμφανίζεται στο προφίλ υγείας σου"
 - Χρησιμοποίησε το προφίλ ΜΟΝΟ όταν είναι σχετικό με την ερώτηση
-- ΜΟΝΟ τα δεδομένα που βλέπεις παραπάνω είναι αληθινά - τίποτα άλλο"""
+- ΜΟΝΟ τα δεδομένα που βλέπεις παραπάνω είναι αληθινά - τίποτα άλλο
+ΦΑΡΜΑΚΑ (ΚΡΙΣΙΜΟ):
+- Όταν αναφέρεις φάρμακα, ΠΑΝΤΑ να αναφέρεις και τις ώρες λήψης (time_slots) αν υπάρχουν στο προφίλ
+- Παράδειγμα σωστής απάντησης: "TRANXENE 20 μισό χάπι — κάθε μέρα στις 00:05"
+- ΜΗΝ αναφέρεις μόνο ημερομηνίες δόσεων — αναφέρεις ΠΑΝΤΑ τις ώρες λήψης"""
         logger.info(f"[PROMPT] Medical context injected for user={user_id} source={snapshot_source}")
     else:
         system_prompt = SYSTEM_PROMPT_BASE
