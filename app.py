@@ -421,30 +421,42 @@ def build_medical_context_from_helpers_snapshot(snap: dict) -> str:
             if not isinstance(entry, dict):
                 continue
             ts_raw = entry.get("_saved_ts") or entry.get("ts") or entry.get("timestamp") or ""
+            # Support {ts, payload} format from helpers.php
+            e = entry.get("payload") if ("payload" in entry and isinstance(entry.get("payload"), dict)) else entry
             ts_str = ""
             if ts_raw:
                 try:
                     ts_str = f" [{datetime.fromtimestamp(int(ts_raw)).strftime('%Y-%m-%d')}]"
                 except Exception:
                     ts_str = f" [{ts_raw}]"
-            vd = entry.get("visit_date", "")
-            vdr = entry.get("visit_doctor", "")
-            vg = entry.get("visit_goal", "")
+            vd = e.get("visit_date", "")
+            vdr = e.get("visit_doctor", "")
+            vg = e.get("visit_goal", "")
             header = f"  Καταχώρηση #{idx}{ts_str}: Ραντεβού {vd} — {vdr}"
             if vg: header += f" ({vg})"
             hist_lines.append(header)
-            # Key fields only for history entries
-            if entry.get("b_meds"): hist_lines.append(f"    Φάρμακα: {entry['b_meds']}")
-            if entry.get("b_labs"): hist_lines.append(f"    Εξετάσεις: {entry['b_labs']}")
-            if entry.get("e_stress"): hist_lines.append(f"    Στρες: {entry['e_stress']}")
-            if entry.get("e_other"): hist_lines.append(f"    Άλλα: {entry['e_other']}")
-            # Symptoms
-            for i in [1, 2, 3]:
-                sn = entry.get(f"s{i}_name", "").strip()
-                sv = entry.get(f"s{i}_vas", "")
-                if sn: hist_lines.append(f"    Σύμπτωμα: {sn} VAS={sv}")
-            _t = entry.get("t_qol") or entry.get("t_goals")
-            if _t: hist_lines.append(f"    Στόχος: {_t}")
+            # All key fields for history entries
+            if e.get("b_meds"): hist_lines.append(f"    Φάρμακα: {e['b_meds']}")
+            if e.get("b_notes"): hist_lines.append(f"    Σημειώσεις: {e['b_notes']}")
+            if e.get("b_labs"): hist_lines.append(f"    Εξετάσεις: {e['b_labs']}")
+            if e.get("e_stress"): hist_lines.append(f"    Στρες: {e['e_stress']}")
+            if e.get("e_infections"): hist_lines.append(f"    Λοιμώξεις: {e['e_infections']}")
+            if e.get("e_other"): hist_lines.append(f"    Άλλα: {e['e_other']}")
+            # Symptoms (up to 5)
+            for i in [1, 2, 3, 4, 5]:
+                sn = e.get(f"s{i}_name", "").strip()
+                sv = e.get(f"s{i}_vas", "")
+                sw = e.get(f"s{i}_worse", "").strip()
+                sb = e.get(f"s{i}_better", "").strip()
+                if sn:
+                    s_line = f"    Σύμπτωμα: {sn} VAS={sv}"
+                    if sw: s_line += f" | Χειροτ.: {sw}"
+                    if sb: s_line += f" | Βελτ.: {sb}"
+                    hist_lines.append(s_line)
+            _t = e.get("t_qol") or e.get("t_goals")
+            if _t: hist_lines.append(f"    Στόχος ποιότητας ζωής: {_t}")
+            _tp = e.get("t_plan") or e.get("t_treatments")
+            if _tp: hist_lines.append(f"    Πλάνο/Ερωτήσεις: {_tp}")
         if hist_lines and len(hist_lines) > 1:  # > 1 because first line is the count header
             parts.append("Ιστορικό BEST (όλες οι καταχωρήσεις με ημερομηνίες):\n" + "\n".join(hist_lines))
         elif hist_lines:  # only the count header, no entries (all already shown in best_protocol)

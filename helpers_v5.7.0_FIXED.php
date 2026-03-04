@@ -975,7 +975,7 @@ function autoa_rest_chat_proxy( WP_REST_Request $req ) {
         $mm_medications_table = $wpdb->prefix . 'mm_medications';
         if ($wpdb->get_var("SHOW TABLES LIKE '$mm_medications_table'") === $mm_medications_table) {
             $mm_medications = $wpdb->get_results($wpdb->prepare(
-                "SELECT medication_name, dosage, frequency, time_slots, status, notes, created_at FROM $mm_medications_table WHERE user_id = %d ORDER BY created_at DESC",
+                "SELECT medication_name, dosage, frequency, time_slots, active, instructions AS notes, created_at FROM $mm_medications_table WHERE patient_id = %d ORDER BY created_at DESC",
                 $user_id
             ), ARRAY_A);
             
@@ -1085,59 +1085,55 @@ function autoa_rest_chat_proxy( WP_REST_Request $req ) {
     if (is_array($best) && !empty($best)) {
         $snapshot['best_protocol'] = $best;
 
-        // Optional human-readable summary (helps prompt injection downstream)
+        // Full human-readable summary — ALL fields exposed to AI
         $best_lines = array();
-        if (!empty($best['visit_date']))   { $best_lines[] = 'Ημερομηνία ραντεβού: ' . $best['visit_date']; }
-        if (!empty($best['visit_doctor'])) { $best_lines[] = 'Ιατρός/Ειδικότητα: ' . $best['visit_doctor']; }
-        if (!empty($best['visit_goal']))   { $best_lines[] = 'Κύριος στόχος: ' . $best['visit_goal']; }
-        if (!empty($best['visit_period'])) { $best_lines[] = 'Περίοδος αναφοράς: ' . $best['visit_period'] . ' ημέρες'; }
-
-        if (!empty($best['b_meds']))       { $best_lines[] = 'Βάση/Φάρμακα: ' . $best['b_meds']; }
-        if (!empty($best['b_labs']))       { $best_lines[] = 'Εξετάσεις/Trend: ' . $best['b_labs']; }
-        if (!empty($best['e_infections'])) { $best_lines[] = 'Συμβάντα/Λοιμώξεις: ' . $best['e_infections']; }
-        if (!empty($best['e_stress']))     { $best_lines[] = 'Στρες: ' . $best['e_stress']; }
-        if (!empty($best['s1_name']) || !empty($best['s1_worse']) || !empty($best['s1_better'])) {
-            $best_lines[] = 'Συμπτώματα: (υπάρχουν καταγραφές)';
+        if (!empty($best['visit_date']))      { $best_lines[] = 'Ημερομηνία ραντεβού: ' . $best['visit_date']; }
+        if (!empty($best['visit_doctor']))    { $best_lines[] = 'Ιατρός/Ειδικότητα: ' . $best['visit_doctor']; }
+        if (!empty($best['visit_goal']))      { $best_lines[] = 'Κύριος στόχος επίσκεψης: ' . $best['visit_goal']; }
+        if (!empty($best['visit_period']))    { $best_lines[] = 'Περίοδος αναφοράς: ' . $best['visit_period'] . ' ημέρες'; }
+        // B — Baseline
+        if (!empty($best['b_meds']))          { $best_lines[] = 'B - Φάρμακα/Δοσολογία: ' . $best['b_meds']; }
+        if (!empty($best['b_notes']))         { $best_lines[] = 'B - Σημειώσεις baseline: ' . $best['b_notes']; }
+        if (!empty($best['b_labs']))          { $best_lines[] = 'B - Εξετάσεις/Trend: ' . $best['b_labs']; }
+        if (!empty($best['b_weight']))        { $best_lines[] = 'B - Βάρος: ' . $best['b_weight']; }
+        if (!empty($best['b_bp']))            { $best_lines[] = 'B - Πίεση: ' . $best['b_bp']; }
+        // E — Events
+        if (!empty($best['e_infections']))    { $best_lines[] = 'E - Λοιμώξεις/Συμβάντα: ' . $best['e_infections']; }
+        if (!empty($best['e_stress']))        { $best_lines[] = 'E - Στρεσογόνα γεγονότα: ' . $best['e_stress']; }
+        if (!empty($best['e_travel']))        { $best_lines[] = 'E - Ταξίδια: ' . $best['e_travel']; }
+        if (!empty($best['e_other']))         { $best_lines[] = 'E - Άλλα γεγονότα: ' . $best['e_other']; }
+        // S — Symptoms (up to 5)
+        for ($si = 1; $si <= 5; $si++) {
+            $s_name  = $best['s' . $si . '_name']  ?? '';
+            $s_vas   = $best['s' . $si . '_vas']   ?? '';
+            $s_worse = $best['s' . $si . '_worse'] ?? '';
+            $s_better= $best['s' . $si . '_better']?? '';
+            if (!empty($s_name)) {
+                $s_line = 'S' . $si . ' - Σύμπτωμα: ' . $s_name;
+                if (!empty($s_vas))    { $s_line .= ' (VAS=' . $s_vas . ')'; }
+                if (!empty($s_worse))  { $s_line .= ' | Χειροτερεύει: ' . $s_worse; }
+                if (!empty($s_better)) { $s_line .= ' | Βελτιώνεται: ' . $s_better; }
+                $best_lines[] = $s_line;
+            }
         }
-        if (!empty($best['t_plan']))       { $best_lines[] = 'Στόχοι/Πλάνο: ' . $best['t_plan']; }
+        // T — Targets
+        if (!empty($best['t_qol']))           { $best_lines[] = 'T - Στόχοι ποιότητας ζωής: ' . $best['t_qol']; }
+        if (!empty($best['t_plan']))          { $best_lines[] = 'T - Πλάνο/Ερωτήσεις για γιατρό: ' . $best['t_plan']; }
+        if (!empty($best['t_questions']))     { $best_lines[] = 'T - Ερωτήσεις: ' . $best['t_questions']; }
 
         if (!empty($best_lines)) {
             $snapshot['best_summary'] = implode("\n", $best_lines);
         }
     }
 
-
-    // --- BEST Protocol History (Autoanosis) ---
-    // Keeps up to 10 last BEST entries in user_meta 'autoanosis_best_history'
-    // Note: BEST is stored as PHP arrays (not JSON). We store history server-side to avoid losing older entries.
-    if (!empty($best_payload) && is_array($best_payload)) {
-        $best_history = get_user_meta($user_id, 'autoanosis_best_history', true);
-        if (!is_array($best_history)) { $best_history = array(); }
-
-        // Derive a stable timestamp for this entry (fallback to now)
-        $entry_ts = intval($best_ts);
-        if ($entry_ts <= 0) { $entry_ts = time(); }
-
-        // De-dup by timestamp + visit_date + visit_doctor
-        $sig = $entry_ts . '|' . ($best_payload['visit_date'] ?? '') . '|' . ($best_payload['visit_doctor'] ?? '');
-        $exists = false;
-        foreach ($best_history as $h) {
-            if (!is_array($h)) { continue; }
-            $h_sig = intval($h['ts'] ?? 0) . '|' . ($h['payload']['visit_date'] ?? '') . '|' . ($h['payload']['visit_doctor'] ?? '');
-            if ($h_sig === $sig) { $exists = true; break; }
-        }
-
-        if (!$exists) {
-            array_unshift($best_history, array(
-                'ts'      => $entry_ts,
-                'payload' => $best_payload,
-            ));
-            // keep only the 10 most recent
-            $best_history = array_slice($best_history, 0, 10);
-            update_user_meta($user_id, 'autoanosis_best_history', $best_history);
-        }
-
-        // expose to snapshot (for AI)
+    // --- BEST Protocol History (always load from user_meta) ---
+    $best_history = get_user_meta($user_id, 'autoanosis_best_history', true);
+    if (!is_array($best_history)) { $best_history = array(); }
+    // If best_history is empty but we have best_protocol, seed it
+    if (empty($best_history) && !empty($best)) {
+        $best_history = array(array('ts' => time(), 'payload' => $best));
+    }
+    if (!empty($best_history)) {
         $snapshot['best_history'] = $best_history;
         $snapshot['best_history_count'] = count($best_history);
     }
