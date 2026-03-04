@@ -87,9 +87,9 @@ def build_medical_context_from_helpers_snapshot(snap: dict) -> str:
     parts = []
 
     # User Info
-    if snap.get("user_name"): parts.append(f"- Name: {snap.get("user_name")}")
-    if snap.get("autoimmune_type"): parts.append(f"- Condition: {snap.get("autoimmune_type")}")
-    if snap.get("health_info"): parts.append(f"- General Health Info: {snap.get("health_info").strip()}")
+    if snap.get("user_name"): parts.append(f"- Name: {snap['user_name']}")
+    if snap.get("autoimmune_type"): parts.append(f"- Condition: {snap['autoimmune_type']}")
+    if snap.get("health_info"): parts.append(f"- General Health Info: {snap['health_info'].strip()}")
 
     # Medications (Active + Inactive History)
     meds = snap.get("medications")
@@ -100,13 +100,14 @@ def build_medical_context_from_helpers_snapshot(snap: dict) -> str:
         if active_meds:
             lines.append("  Active Medications:")
             for m in active_meds:
-                line = f"    - {m.get("medication_name", "N/A")} {m.get("dosage", "")}"
-                if m.get("time_slots"): line += f" (at: {', '.join(m.get("time_slots"))})"
+                line = f"    - {m.get('medication_name', 'N/A')} {m.get('dosage', '')}"
+                slots = m.get('time_slots')
+                if slots and isinstance(slots, list): line += f" (at: {', '.join(slots)})"
                 lines.append(line)
         if inactive_meds:
             lines.append("  Past Medications:")
             for m in inactive_meds:
-                lines.append(f"    - {m.get("medication_name", "N/A")} (inactive since {m.get("created_at", "N/A")})")
+                lines.append(f"    - {m.get('medication_name', 'N/A')} (inactive since {m.get('created_at', 'N/A')})")
         parts.append("\n".join(lines))
 
     # Lab Results (Full History)
@@ -114,7 +115,7 @@ def build_medical_context_from_helpers_snapshot(snap: dict) -> str:
     if isinstance(test_results, list) and test_results:
         lines = [f"Found {len(test_results)} lab reports."]
         for r in test_results:
-            lines.append(f"  - {r.get("test_date", "N/A")}: {r.get("test_name", "N/A")} - {r.get("result_value", "N/A")} {r.get("unit", "")}")
+            lines.append(f"  - {r.get('test_date', 'N/A')}: {r.get('test_name', 'N/A')} - {r.get('result_value', 'N/A')} {r.get('unit', '')}")
         parts.append("\n".join(lines))
 
     # Symptoms Diary (Last 30 days)
@@ -122,7 +123,7 @@ def build_medical_context_from_helpers_snapshot(snap: dict) -> str:
     if isinstance(symptoms, list) and symptoms:
         lines = [f"Found {len(symptoms)} symptom entries from the last 30 days."]
         for s in symptoms:
-            lines.append(f"  - {s.get("recorded_at", "N/A")}: {s.get("symptom_name", "N/A")}")
+            lines.append(f"  - {s.get('recorded_at', 'N/A')}: {s.get('symptom_name', 'N/A')}")
         parts.append("\n".join(lines))
 
     # BEST Protocol (Last 5 entries)
@@ -130,7 +131,7 @@ def build_medical_context_from_helpers_snapshot(snap: dict) -> str:
     if isinstance(best_history, list) and best_history:
         lines = [f"Found {len(best_history)} B.E.S.T. protocol entries."]
         for i, b in enumerate(best_history, 1):
-            lines.append(f"  {i}. Entry from {b.get("visit_date", "N/A")} for Dr. {b.get("visit_doctor", "N/A")}")
+            lines.append(f"  {i}. Entry from {b.get('visit_date', 'N/A')} for Dr. {b.get('visit_doctor', 'N/A')}")
         parts.append("\n".join(lines))
 
     if not parts:
