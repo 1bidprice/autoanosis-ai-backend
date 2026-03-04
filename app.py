@@ -657,7 +657,7 @@ def health_check():
     return jsonify({
         "status": "healthy",
         "service": "autoanosis-ai-backend",
-        "version": "5.9.0",
+        "version": "5.14.0",
         "timestamp": datetime.utcnow().isoformat() + "Z",
         "architecture": "wp_push",
         "features": [
