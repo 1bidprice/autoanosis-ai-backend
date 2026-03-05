@@ -1,4 +1,4 @@
-"""Autoanosis AI Backend v5.14.0
+"""Autoanosis AI Backend v5.15.4
 Professional Flask backend for AI Assistant with Medical Context
 Deployed on Render.com
 Changelog:
@@ -419,9 +419,21 @@ def build_medical_context_from_helpers_snapshot(snap: dict) -> str:
         if bp:
             parts.append("BEST Protocol (Προετοιμασία Ραντεβού — B.E.S.T.):\n" + "\n".join(bp))
 
-    # BEST History (all previous BEST entries, newest first) — v5.12.0
+    # BEST History (all previous BEST entries, newest first) — v5.15.4
+    # De-dup at app.py level by visit_date+visit_doctor (handles timestamp=0 duplicates from helpers.php)
     best_history = snap.get("best_history")
     if best_history and isinstance(best_history, list) and len(best_history) >= 1:
+        # De-dup by visit_date + visit_doctor signature
+        _seen_sigs = set()
+        _deduped = []
+        for _h in best_history:
+            if not isinstance(_h, dict): continue
+            _ep = _h.get("payload") if ("payload" in _h and isinstance(_h.get("payload"), dict)) else _h
+            _sig = f"{_ep.get('visit_date','')}|{_ep.get('visit_doctor','')}"
+            if _sig in _seen_sigs: continue
+            _seen_sigs.add(_sig)
+            _deduped.append(_h)
+        best_history = _deduped
         # Show ALL history entries with dates
         # If best_protocol already shown (index 0), show remaining; if not shown, show all
         hist_lines = [f"Σύνολο καταχωρήσεων BEST: {len(best_history)}"]
@@ -816,7 +828,9 @@ def chat():
         response = client.chat.completions.create(
             model="gpt-4o-mini",
             messages=messages,
-            temperature=0.7
+            temperature=0.7,
+            max_tokens=1500,  # v5.15.4: Limit response length to prevent 502 timeouts on Render
+            timeout=90        # v5.15.4: Explicit 90s timeout (gunicorn timeout is 120s)
         )
         ai_response = response.choices[0].message.content
 
