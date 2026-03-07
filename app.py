@@ -2,6 +2,7 @@
 Professional Flask backend for AI Assistant with Medical Context
 Deployed on Render.com
 Changelog:
+v5.16.0 (2026-03-07) - Fix completeness: unconditional full data presentation rule, max_tokens 1500→3000
 v5.14.0 (2026-03-03) - Medical Memory integration: medications with time_slots, medication_schedule from mm_doses
 v5.12.0 (2026-03-02) - Fix: Show BEST history even with 1 entry (was > 1, now >= 1); show all entries from best_history
 v5.11.0 (2026-03-02) - BEST History: helpers.php stores rolling history (max 10), app.py displays all past entries with timestamps
@@ -829,7 +830,7 @@ def chat():
             model="gpt-4o-mini",
             messages=messages,
             temperature=0.7,
-            max_tokens=1500,  # v5.15.4: Limit response length to prevent 502 timeouts on Render
+            max_tokens=3000,  # v5.16.0: Increased to 3000 to allow full medical data (16+ tests + BEST + medications)
             timeout=90        # v5.15.4: Explicit 90s timeout (gunicorn timeout is 120s)
         )
         ai_response = response.choices[0].message.content
