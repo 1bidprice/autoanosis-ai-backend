@@ -1,34 +1,21 @@
-"""Autoanosis AI Backend v5.15.4
-Professional Flask backend for AI Assistant with Medical Context
+"""Autoanosis AI Backend v6.0.0
+Professional Flask backend — Medical Context Orchestration Engine
 Deployed on Render.com
+
 Changelog:
+v6.0.0 (2026-03-08) - MAJOR: Medical Context Orchestration Engine
+  - Smart Context Router: intent detection → selective context loading
+  - Medical Report Generator: /generate-report endpoint with chunked AI analysis
+  - Pattern Detection: trend analysis across test results and check-ins
+  - PDF generation via ReportLab (no external dependencies)
+  - max_tokens 3000 → 4000 for full medical profiles
+  - Structured response format guarantees completeness
 v5.16.0 (2026-03-07) - Fix completeness: unconditional full data presentation rule, max_tokens 1500→3000
-v5.14.0 (2026-03-03) - Medical Memory integration: medications with time_slots, medication_schedule from mm_doses
-v5.12.0 (2026-03-02) - Fix: Show BEST history even with 1 entry (was > 1, now >= 1); show all entries from best_history
-v5.11.0 (2026-03-02) - BEST History: helpers.php stores rolling history (max 10), app.py displays all past entries with timestamps
-v5.10.0 (2026-03-02) - Fix: Correct BEST Protocol field names (b_adherence, b_notes, s_timeline, s_functional, t_qol) + symptoms table (s1/s2/s3)
-v5.9.0 (2026-03-02) - Fix: Clear separation of BEST Protocol vs daily check-ins in system prompt and context labels
-v5.8.0 (2026-03-02) - Enhanced BEST Protocol parsing and search keys
-v5.7.0 (2026-03-01) - Full medical data: ALL BEST fields + timestamps + test_results + health_notes + health_tracking + best_summary fallback
-v5.7.0 (2026-02-28) - Add BEST protocol support in helpers snapshot + best_protocol detection key
-v5.4.0 (2026-02-28) - Handle helpers.php snapshot structure (health_info, autoimmune_type, medications)
-v5.3.0 (2026-02-28) - Accept both wp_context and medical_snapshot keys from WordPress
-v5.2.0 (2026-02-28) - CTX logs, BEST system prompt fix, wp_context key logging
-v5.1.0 (2026-02-28) - WP PUSH architecture (final solution)
-- ARCH: Render no longer pulls from WordPress (WAF-proof)
-- ARCH: WordPress chat-proxy pushes wp_context in request body
-- SECURITY: HMAC-SHA256 signature on proxy requests (X-Autoa-Proxy-Sig)
-- SECURITY: Timestamp anti-replay (5-min window)
-- NEW: AUTOA_AI_PROXY_SECRET env var for proxy HMAC verification
-- CLEAN: Removed all WordPress pull logic (WORDPRESS_AJAX_URL etc. no longer needed)
-- LOGS: [PROXY], [CONTEXT], [PROMPT] structured log prefixes
-v5.0.0 (2026-02-28) - Admin-ajax HMAC bridge (blocked by WAF)
-v4.6.0 (2026-02-27) - WAF-bypass endpoint attempt via /wp-json/autoanosis-internal/
-v4.5.0 (2026-02-27) - Fix WordPress endpoint URL
-v4.4.0 (2026-02-27) - Production-grade schema validation
-v4.3.0 (2026-02-27) - Accept 2xx responses from WordPress
-v4.1.0 (2026-02-25) - Phase 1+2 Security Hardening
-v4.0.0 (2026-02-25) - WordPress Aggregator Integration
+v5.15.4 (2026-03-07) - Fix 502 timeout (gunicorn 120s + max_tokens 1500) + BEST history dedup
+v5.14.0 (2026-03-03) - Medical Memory integration: medications with time_slots
+v5.12.0 (2026-03-02) - Fix: Show BEST history even with 1 entry
+v5.11.0 (2026-03-02) - BEST History: rolling history (max 10)
+v5.1.0  (2026-02-28) - WP PUSH architecture (final solution)
 """
 import os
 import hmac as _hmac
@@ -37,10 +24,13 @@ import json
 import logging
 import time
 import uuid
+import io
+import re
+import unicodedata
 import requests
 from collections import defaultdict
 from datetime import datetime
-from flask import Flask, request, jsonify
+from flask import Flask, request, jsonify, send_file
 from flask_cors import CORS
 from openai import OpenAI
 from identity import verify_identity_token
@@ -84,7 +74,6 @@ def get_openai_client():
 # ---------------------------------------------------------------------------
 # Configuration
 # ---------------------------------------------------------------------------
-# v5.1.0: WP PUSH — Render verifies proxy signature, never pulls from WP
 AUTOA_PROXY_SECRET = os.environ.get("AUTOA_AI_PROXY_SECRET", "").strip()
 PROXY_TS_TOLERANCE = 300  # 5 minutes
 
@@ -137,86 +126,448 @@ def save_conversation_message(conversation_id: str, user_id: int, role: str, con
         conv["messages"] = conv["messages"][-MAX_CONVERSATION_HISTORY:]
 
 # ---------------------------------------------------------------------------
-# System prompt
-# ---------------------------------------------------------------------------
-SYSTEM_PROMPT_BASE = """Είσαι ο Autoanosis Assistant, ένας εξειδικευμένος βοηθός υγείας στα ελληνικά.
-Παρέχεις:
-- Ακριβείς και επιστημονικά τεκμηριωμένες πληροφορίες υγείας
-- Φιλικές και κατανοητές απαντήσεις
-- Υποστήριξη σε θέματα υγείας, φαρμάκων, συμπτωμάτων
-Σημαντικό:
-- ΔΕΝ αντικαθιστάς ιατρική συμβουλή
-- Συνιστάς πάντα επίσκεψη σε γιατρό για σοβαρά θέματα
-- Απαντάς στα ελληνικά
-
-ΔΟΜΗ ΔΕΔΟΜΕΝΩΝ ΧΡΗΣΤΗ — ΚΑΤΑΝΟΗΣΕ ΤΗ ΔΙΑΦΟΡΑ:
-1. "Πρόσφατα check-ins" = Καθημερινό ημερολόγιο συμπτωμάτων (πόνος, κόπωση, ενέργεια, διάθεση). Είναι ΞΕΧΩΡΙΣΤΟ από το BEST Protocol.
-2. "BEST Protocol (Προετοιμασία Ραντεβού — B.E.S.T.)" = Δομημένη προετοιμασία για ιατρικό ραντεβού. Περιέχει: ημερομηνία ραντεβού, ιατρό, φάρμακα (B), γεγονότα (E), συμπτώματα BEST (S), στόχους (T). ΠΟΤΕ μην αναμιγνύεις αυτά τα δύο.
-3. "Αποτελέσματα Εξετάσεων" = Εργαστηριακές εξετάσεις με ημερομηνίες και τιμές.
-4. "Ιστορικό φαρμάκων / Υγεία" = Ελεύθερο κείμενο με ιστορικό θεραπειών.
-
-Όταν ο χρήστης ρωτά για το BEST, αναφέρσου ΜΟΝΟ στα δεδομένα από την ενότητα "BEST Protocol". Όταν ρωτά για check-ins ή ημερολόγιο, αναφέρσου ΜΟΝΟ στην ενότητα "Πρόσφατα check-ins".
-
-ΚΑΝΟΝΑΣ ΠΛΗΡΟΤΗΤΑΣ — ΥΠΟΧΡΕΩΤΙΚΟΣ:
-Όταν ο χρήστης ρωτά για την κατάσταση υγείας του, το προφίλ υγείας του, ή ζητά γενική επισκόπηση των δεδομένων του, ΠΑΝΤΑ παρουσίαζε ΟΛΕΣ τις διαθέσιμες κατηγορίες δεδομένων:
-- Φάρμακα (με ώρες λήψης αν υπάρχουν)
-- Αποτελέσματα εξετάσεων (ΟΛΑ τα αποτελέσματα)
-- BEST Protocol (αν υπάρχει)
-- Πρόσφατα συμπτώματα / check-ins
-- Ιατρικό ιστορικό / διαγνώσεις
-ΜΗΝ παραλείπεις καμία κατηγορία. Αν μια κατηγορία έχει δεδομένα στο context, ΠΡΕΠΕΙ να την παρουσιάσεις χωρίς ο χρήστης να χρειαστεί να ρωτήσει ξεχωριστά."""
-
-# ---------------------------------------------------------------------------
-# HMAC proxy signature verification (v5.1.0)
-# Canonical: TS.NONCE.RAW_BODY
+# HMAC proxy signature verification
 # ---------------------------------------------------------------------------
 def verify_proxy_signature(ts_str: str, nonce: str, raw_body: bytes, sig: str) -> tuple[bool, str]:
-    """Verify HMAC signature from WordPress chat-proxy."""
     if not AUTOA_PROXY_SECRET:
-        # If no secret configured, skip verification (dev mode)
         logger.warning("[PROXY] AUTOA_AI_PROXY_SECRET not set — skipping signature verification")
         return True, "no_secret"
-
     try:
         ts = int(ts_str)
     except (ValueError, TypeError):
         return False, "invalid_ts"
-
     now = int(time.time())
     if abs(now - ts) > PROXY_TS_TOLERANCE:
         return False, f"ts_expired (delta={abs(now - ts)}s)"
-
     canonical = f"{ts}.{nonce}.{raw_body.decode('utf-8', errors='replace')}"
     expected = _hmac.new(
         AUTOA_PROXY_SECRET.encode("utf-8"),
         canonical.encode("utf-8"),
         hashlib.sha256
     ).hexdigest()
-
     if not _hmac.compare_digest(expected, sig):
         return False, "sig_mismatch"
-
     return True, "ok"
 
-# ---------------------------------------------------------------------------
-# Medical context extraction from wp_context (v5.1.0)
-# Handles both aggregator REST shape and ai-context-builder shape
-# ---------------------------------------------------------------------------
-def extract_context_from_wp_push(wp_context: dict) -> str:
-    """
-    Extract a formatted medical context string from the wp_context dict
-    pushed by the WordPress chat-proxy.
+# ===========================================================================
+# SMART CONTEXT ROUTER — Intent Detection + Selective Context Loading
+# ===========================================================================
 
-    Handles two shapes:
-    Shape A: Aggregator REST response (autoanosis/v1/bot/medical-context)
-      { "context_text": "...", "data": {...}, "unified": {...} }
-    Shape B: Autoa_AI_Context_Builder::build_context() output
-      { "user_profile": {...}, "health_data": {...}, "recent_checkins": {...}, ... }
+# Intent categories with Greek keyword patterns
+INTENT_PATTERNS = {
+    "medications": [
+        r"φάρμακ", r"φαρμακ", r"χάπι", r"χαπι", r"δόσ", r"δοσ",
+        r"παίρνω", r"παιρνω", r"θεραπεί", r"θεραπει", r"αγωγ",
+        r"tranxene", r"serolux", r"trebon", r"probiotic",
+    ],
+    "test_results": [
+        r"εξέτασ", r"εξετασ", r"αποτέλεσμ", r"αποτελεσμ",
+        r"αίμα", r"αιμα", r"εργαστήρ", r"εργαστηρ",
+        r"φερριτίν", r"φερριτιν", r"ferritin",
+        r"βιταμίν", r"βιταμιν", r"vitamin",
+        r"b12", r"tkε", r"tke", r"c3", r"c4",
+        r"τιμ", r"αποτέλεσμ", r"αποτελεσμ",
+        r"εξετάσεις", r"εξετασεις",
+        r"εξετ", r"εξέτ",
+    ],
+    "best_protocol": [
+        r"best", r"b\.e\.s\.t", r"ραντεβού", r"ραντεβου",
+        r"γιατρ", r"ιατρ", r"νεφρολόγ", r"νεφρολογ",
+        r"νευρολόγ", r"νευρολογ", r"ρευματολόγ", r"ρευματολογ",
+        r"επίσκεψ", r"επισκεψ", r"στόχ", r"στοχ",
+        r"προετοιμασί", r"προετοιμασι",
+    ],
+    "checkins": [
+        r"check.in", r"ημερολόγ", r"ημερολογ",
+        r"πόνος", r"πονος", r"κόπωσ", r"κοπωσ",
+        r"ενέργεια", r"ενεργεια", r"διάθεσ", r"διαθεσ",
+        r"σήμερα", r"σημερα", r"χθες", r"εβδομάδ", r"εβδομαδ",
+        r"τελευταί", r"τελευται",
+    ],
+    "symptoms": [
+        r"σύμπτωμ", r"συμπτωμ", r"πόνος", r"πονος",
+        r"κόπωσ", r"κοπωσ", r"φλεγμον", r"κρίσ", r"κρισ",
+        r"επιδείνωσ", r"επιδεινωσ", r"βελτίωσ", r"βελτιωσ",
+    ],
+    "full_profile": [
+        r"γενική", r"γενικη", r"γενικά", r"γενικα",  # γενικ not γενικ (too broad)
+        r"όλα τα", r"όλα μου", r"ολα τα", r"ολα μου",  # όλα not όλ (too broad)
+        r"προφίλ", r"προφιλ",
+        r"κατάστασή μου", r"κατασταση μου",
+        r"υγεία μου", r"υγεια μου",
+        r"συνολική", r"συνολικα",
+        r"πλήρης", r"πληρης", r"πλήρες", r"πληρες",
+        r"επισκόπηση", r"επισκοπηση",
+        r"πώς είμαι", r"πως ειμαι", r"τι έχω", r"τι εχω",
+        r"τι δεδομένα", r"τι δεδομενα",
+    ],
+    "report": [
+        r"έκθεσ", r"εκθεσ", r"αναφορ", r"report",
+        r"γιατρ.*έγγραφ", r"έγγραφ.*γιατρ",
+        r"εκτύπωσ", r"εκτυπωσ", r"pdf",
+        r"ιατρικ.*έγγραφ", r"ιατρικ.*αναφορ",
+        r"δώσε.*γιατρ", r"δωσε.*γιατρ",
+    ],
+    "pattern_detection": [
+        r"μοτίβ", r"μοτιβ", r"pattern",
+        r"trend", r"εξέλιξ", r"εξελιξ",
+        r"τάση", r"ταση",  # τάση not τάσ (too broad)
+        r"βελτιώνεται", r"βελτιωνεται",
+        r"επιδεινώνεται", r"επιδεινωνεται",
+        r"συσχέτισ", r"συσχετισ",
+    ],
+}
+
+def _normalize_greek(text: str) -> str:
+    """Normalize Greek text: lowercase + strip accents for robust matching."""
+    lower = text.lower()
+    # Strip combining diacritical marks (accents) via NFD decomposition
+    return ''.join(
+        c for c in unicodedata.normalize('NFD', lower)
+        if unicodedata.category(c) != 'Mn'
+    )
+
+
+def detect_intent(message: str) -> list[str]:
+    """Detect query intent from Greek message. Returns list of relevant intents."""
+    # Normalize: lowercase + strip accents so ω matches ώ, ε matches έ, etc.
+    msg_norm = _normalize_greek(message)
+    detected = []
+    for intent, patterns in INTENT_PATTERNS.items():
+        for pattern in patterns:
+            # Also normalize the pattern itself
+            norm_pattern = _normalize_greek(pattern)
+            if re.search(norm_pattern, msg_norm):
+                detected.append(intent)
+                break
+    # Default to full_profile if no specific intent detected
+    if not detected:
+        return ["full_profile"]
+    # If report intent detected, return immediately
+    if "report" in detected:
+        return ["report"]
+    # full_profile overrides specific intents (show everything)
+    if "full_profile" in detected:
+        return ["full_profile"]
+    # checkins takes priority over symptoms (symptoms overlap with checkins)
+    if "checkins" in detected and "symptoms" in detected:
+        detected.remove("symptoms")
+    # Remove pattern_detection from primary intents (it's supplementary)
+    primary = [i for i in detected if i != "pattern_detection"]
+    if not primary:
+        return ["full_profile"]
+    # If multiple different primary intents → show full profile
+    if len(primary) > 1:
+        return ["full_profile"]
+    # Single primary intent — return it (optionally with pattern_detection)
+    if "pattern_detection" in detected:
+        return primary + ["pattern_detection"]
+    return primary
+
+
+def build_selective_context(snap: dict, intents: list[str]) -> str:
+    """
+    Build medical context string based on detected intents.
+    Only loads data relevant to the query — prevents context overflow.
+    For full_profile intent: loads everything.
+    """
+    if not snap or not isinstance(snap, dict):
+        return ""
+
+    parts = []
+
+    # Always include basic profile (minimal overhead ~100 tokens)
+    name = snap.get("user_name")
+    if name:
+        parts.append(f"Χρήστης: {name}")
+    cond = snap.get("autoimmune_type")
+    if cond:
+        parts.append(f"Αυτοάνοση πάθηση: {cond}")
+    diet = snap.get("diet_pref")
+    if diet:
+        parts.append(f"Διατροφή: {diet}")
+    health_info = snap.get("health_info")
+    if health_info and isinstance(health_info, str) and health_info.strip():
+        parts.append(f"Ιστορικό φαρμάκων / Υγεία: {health_info.strip()}")
+
+    load_all = ("full_profile" in intents)
+
+    # --- MEDICATIONS ---
+    if load_all or "medications" in intents:
+        meds = snap.get("medications") or []
+        if isinstance(meds, list) and meds:
+            med_lines = []
+            for m in meds:
+                if isinstance(m, dict):
+                    n = m.get("medication_name") or m.get("name") or m.get("drug_name") or ""
+                    dose = m.get("dosage") or m.get("dose") or ""
+                    freq = m.get("frequency") or ""
+                    time_slots = m.get("time_slots") or []
+                    notes = m.get("notes") or ""
+                    if n:
+                        line = f"{n}"
+                        if dose:
+                            line += f" {dose}"
+                        if freq:
+                            line += f" ({freq})"
+                        if isinstance(time_slots, list) and time_slots:
+                            line += f" — ώρες λήψης: {', '.join(time_slots)}"
+                        elif isinstance(time_slots, str) and time_slots:
+                            line += f" — ώρες λήψης: {time_slots}"
+                        if notes:
+                            line += f" [{notes[:60]}]"
+                        med_lines.append(line)
+            if med_lines:
+                parts.append("Φάρμακα (Medical Memory):\n" + "\n".join(f"• {l}" for l in med_lines))
+        # Medication schedule
+        med_schedule = snap.get("medication_schedule") or []
+        if isinstance(med_schedule, list) and med_schedule:
+            sched_lines = []
+            for d in med_schedule[:10]:
+                if isinstance(d, dict):
+                    med_name = d.get("medication_name") or ""
+                    dose = d.get("dosage") or ""
+                    due = d.get("due_at") or d.get("dose_date") or ""
+                    status = d.get("status") or ""
+                    if med_name and due:
+                        sched_lines.append(f"{due}: {med_name} {dose} [{status}]".strip())
+            if sched_lines:
+                parts.append("Πρόγραμμα Δόσεων (επόμενες):\n" + "\n".join(sched_lines))
+
+    # --- TEST RESULTS ---
+    if load_all or "test_results" in intents:
+        test_results = snap.get("test_results") or []
+        if isinstance(test_results, list) and test_results:
+            res_lines = []
+            for r in test_results:
+                if isinstance(r, dict):
+                    date = r.get("test_date") or r.get("created_at") or ""
+                    name_t = r.get("test_name") or r.get("name") or ""
+                    val = r.get("result_value") or r.get("value") or ""
+                    unit = r.get("unit") or ""
+                    ref = r.get("reference_range") or ""
+                    status = r.get("status") or ""
+                    note = r.get("notes") or r.get("note") or ""
+                    line = f"{date}: {name_t} = {val} {unit}".strip().rstrip(":")
+                    if ref:
+                        line += f" (Φυσιολογικό: {ref})"
+                    if status:
+                        line += f" [{status}]"
+                    if note:
+                        line += f" — {note[:80]}"
+                    if line.strip(":"):
+                        res_lines.append(line)
+            if res_lines:
+                parts.append(f"Αποτελέσματα Εξετάσεων ({len(res_lines)} εγγραφές):\n" + "\n".join(res_lines))
+
+    # --- BEST PROTOCOL ---
+    if load_all or "best_protocol" in intents:
+        best = snap.get("best_protocol") or snap.get("autoanosis_best_protocol") or snap.get("medical_snapshot")
+        if isinstance(best, list) and best:
+            best = best[0]
+        if best and isinstance(best, dict):
+            bp = []
+            if best.get("visit_date"):    bp.append(f"Ημερομηνία Ραντεβού: {best['visit_date']}")
+            if best.get("visit_doctor"):  bp.append(f"Ιατρός/Ειδικότητα: {best['visit_doctor']}")
+            if best.get("visit_goal"):    bp.append(f"Στόχος επίσκεψης: {best['visit_goal']}")
+            if best.get("visit_period"):  bp.append(f"Περίοδος αναφοράς: {best['visit_period']}")
+            if best.get("b_meds"):        bp.append(f"[B] Φάρμακα & δοσολογία: {best['b_meds']}")
+            _b_adh = best.get("b_adherence") or best.get("b_side")
+            if _b_adh:                    bp.append(f"[B] Συμμόρφωση & παρενέργειες: {_b_adh}")
+            if best.get("b_labs"):        bp.append(f"[B] Εξετάσεις εκτός ορίων: {best['b_labs']}")
+            _b_notes = best.get("b_notes") or best.get("b_baseline")
+            if _b_notes:                  bp.append(f"[B] Σημειώσεις baseline: {_b_notes}")
+            if best.get("e_infections"):  bp.append(f"[E] Λοιμώξεις/Ιώσεις: {best['e_infections']}")
+            if best.get("e_stress"):      bp.append(f"[E] Στρεσογόνα γεγονότα: {best['e_stress']}")
+            _e_life = best.get("e_lifestyle") or best.get("e_events")
+            if _e_life:                   bp.append(f"[E] Αλλαγές τρόπου ζωής: {_e_life}")
+            if best.get("e_other"):       bp.append(f"[E] Άλλα συμβάντα: {best['e_other']}")
+            _s_rows = []
+            for i in [1, 2, 3, 4, 5]:
+                sn = best.get(f"s{i}_name", "").strip() if best.get(f"s{i}_name") else ""
+                sv = best.get(f"s{i}_vas", "")
+                sp = best.get(f"s{i}_peak", "").strip() if best.get(f"s{i}_peak") else ""
+                sw = best.get(f"s{i}_worse", "").strip() if best.get(f"s{i}_worse") else ""
+                sb = best.get(f"s{i}_better", "").strip() if best.get(f"s{i}_better") else ""
+                if sn:
+                    row = f"{sn} VAS={sv}"
+                    if sp: row += f" | Ώρες αιχμής: {sp}"
+                    if sw: row += f" | Χειροτερεύει: {sw}"
+                    if sb: row += f" | Βελτιώνεται: {sb}"
+                    _s_rows.append(row)
+            if _s_rows:
+                bp.append(f"[S] Συμπτώματα: " + " / ".join(_s_rows))
+            if best.get("s_symptoms"):    bp.append(f"[S] Συμπτώματα (επιπλέον): {best['s_symptoms']}")
+            _s_tl = best.get("s_timeline") or best.get("s_timing")
+            if _s_tl:                     bp.append(f"[S] Χρονική χαρτογράφηση: {_s_tl}")
+            _s_fn = best.get("s_functional") or best.get("s_impact")
+            if _s_fn:                     bp.append(f"[S] Λειτουργικός αντίκτυπος: {_s_fn}")
+            _t_qol = best.get("t_qol") or best.get("t_goals")
+            if _t_qol:                    bp.append(f"[T] Στόχοι ποιότητας ζωής: {_t_qol}")
+            if best.get("t_biomarkers"):  bp.append(f"[T] Στόχοι βιοδεικτών: {best['t_biomarkers']}")
+            if best.get("t_questions"):   bp.append(f"[T] Ερωτήσεις προς ιατρό: {best['t_questions']}")
+            _t_plan = best.get("t_plan") or best.get("t_treatments")
+            if _t_plan:                   bp.append(f"[T] Πλάνο/Θεραπείες: {_t_plan}")
+            _ts = best.get("ts") or best.get("timestamp") or best.get("saved_at")
+            if _ts:                       bp.append(f"[Ημ/νία καταχώρισης BEST: {_ts}]")
+            if bp:
+                parts.append("BEST Protocol (Προετοιμασία Ραντεβού — B.E.S.T.):\n" + "\n".join(bp))
+
+        # BEST History
+        best_history = snap.get("best_history")
+        if best_history and isinstance(best_history, list) and len(best_history) >= 1:
+            _seen_sigs = set()
+            _deduped = []
+            for _h in best_history:
+                if not isinstance(_h, dict): continue
+                _ep = _h.get("payload") if ("payload" in _h and isinstance(_h.get("payload"), dict)) else _h
+                _sig = f"{_ep.get('visit_date', '')}|{_ep.get('visit_doctor', '')}"
+                if _sig in _seen_sigs: continue
+                _seen_sigs.add(_sig)
+                _deduped.append(_h)
+            best_history = _deduped
+            hist_lines = [f"Σύνολο καταχωρήσεων BEST: {len(best_history)}"]
+            start_idx = 1 if any("BEST Protocol" in p for p in parts) else 0
+            for idx, entry in enumerate(best_history[start_idx:], start=start_idx + 1):
+                if not isinstance(entry, dict):
+                    continue
+                ts_raw = entry.get("_saved_ts") or entry.get("ts") or entry.get("timestamp") or ""
+                e = entry.get("payload") if ("payload" in entry and isinstance(entry.get("payload"), dict)) else entry
+                ts_str = ""
+                if ts_raw:
+                    try:
+                        ts_str = f" [{datetime.fromtimestamp(int(ts_raw)).strftime('%Y-%m-%d')}]"
+                    except Exception:
+                        ts_str = f" [{ts_raw}]"
+                vd = e.get("visit_date", "")
+                vdr = e.get("visit_doctor", "")
+                vg = e.get("visit_goal", "")
+                header = f"  Καταχώρηση #{idx}{ts_str}: Ραντεβού {vd} — {vdr}"
+                if vg: header += f" ({vg})"
+                hist_lines.append(header)
+                if e.get("b_meds"): hist_lines.append(f"    Φάρμακα: {e['b_meds']}")
+                if e.get("b_notes"): hist_lines.append(f"    Σημειώσεις: {e['b_notes']}")
+                if e.get("b_labs"): hist_lines.append(f"    Εξετάσεις: {e['b_labs']}")
+                if e.get("e_stress"): hist_lines.append(f"    Στρες: {e['e_stress']}")
+                if e.get("e_infections"): hist_lines.append(f"    Λοιμώξεις: {e['e_infections']}")
+                if e.get("e_other"): hist_lines.append(f"    Άλλα: {e['e_other']}")
+                for i in [1, 2, 3, 4, 5]:
+                    sn = e.get(f"s{i}_name", "").strip() if e.get(f"s{i}_name") else ""
+                    sv = e.get(f"s{i}_vas", "")
+                    sw = e.get(f"s{i}_worse", "").strip() if e.get(f"s{i}_worse") else ""
+                    sb = e.get(f"s{i}_better", "").strip() if e.get(f"s{i}_better") else ""
+                    if sn:
+                        s_line = f"    Σύμπτωμα: {sn} VAS={sv}"
+                        if sw: s_line += f" | Χειροτ.: {sw}"
+                        if sb: s_line += f" | Βελτ.: {sb}"
+                        hist_lines.append(s_line)
+                _t = e.get("t_qol") or e.get("t_goals")
+                if _t: hist_lines.append(f"    Στόχος ποιότητας ζωής: {_t}")
+                _tp = e.get("t_plan") or e.get("t_treatments")
+                if _tp: hist_lines.append(f"    Πλάνο/Ερωτήσεις: {_tp}")
+            if len(hist_lines) > 1:
+                parts.append("Ιστορικό BEST (όλες οι καταχωρήσεις):\n" + "\n".join(hist_lines))
+            elif hist_lines:
+                parts.append(f"Σύνολο BEST καταχωρήσεων: {len(best_history)} (η τρέχουσα εγγραφή εμφανίζεται παραπάνω)")
+
+        # best_summary fallback
+        best_summary = snap.get("best_summary")
+        if best_summary and isinstance(best_summary, str) and best_summary.strip():
+            if not any("BEST Protocol" in p for p in parts):
+                parts.append(f"BEST Protocol (σύνοψη):\n{best_summary.strip()}")
+
+    # --- CHECK-INS ---
+    if load_all or "checkins" in intents:
+        checkins = snap.get("recent_checkins") or []
+        if isinstance(checkins, list) and checkins:
+            ci_lines = []
+            for ci in checkins[:7]:
+                if isinstance(ci, dict):
+                    d = ci.get("checkin_date", "")
+                    pain = ci.get("pain_level", "")
+                    fatigue = ci.get("fatigue_level", "")
+                    energy = ci.get("energy_level", "")
+                    mood = ci.get("mood_level", "")
+                    notes = ci.get("notes", "")
+                    line = f"{d}: πόνος={pain}, κόπωση={fatigue}, ενέργεια={energy}, διάθεση={mood}"
+                    if notes:
+                        line += f", σημ.: {notes[:60]}"
+                    ci_lines.append(line)
+            if ci_lines:
+                parts.append("Καθημερινό Ημερολόγιο Συμπτωμάτων (check-ins):\n" + "\n".join(ci_lines))
+
+    # --- SYMPTOMS ---
+    if load_all or "symptoms" in intents:
+        symptoms = snap.get("recent_symptoms") or []
+        if isinstance(symptoms, list) and symptoms:
+            sym_names = []
+            for s in symptoms[:10]:
+                if isinstance(s, dict):
+                    sn = s.get("symptom_name") or s.get("name") or s.get("symptom") or ""
+                    if sn:
+                        sym_names.append(sn)
+            if sym_names:
+                parts.append(f"Πρόσφατα συμπτώματα: {', '.join(sym_names)}")
+
+    # --- HEALTH PROFILE (always for full_profile) ---
+    if load_all:
+        hp = snap.get("health_profile")
+        if isinstance(hp, dict) and hp:
+            hp_parts = []
+            for k, v in hp.items():
+                if v and k not in ("id", "user_id", "created_at", "updated_at"):
+                    hp_parts.append(f"{k}: {v}")
+            if hp_parts:
+                parts.append("Προφίλ υγείας: " + ", ".join(hp_parts[:8]))
+
+        # Health notes
+        health_notes = snap.get("health_notes") or []
+        if isinstance(health_notes, list) and health_notes:
+            hn_lines = []
+            for n in health_notes:
+                if isinstance(n, dict):
+                    date = n.get("created_at") or n.get("date") or ""
+                    title = n.get("note_title") or n.get("title") or ""
+                    body = n.get("note_content") or n.get("content") or n.get("note") or ""
+                    line = f"{date}: {title} — {body[:120]}".strip().rstrip("—").strip()
+                    if line.strip(":"): hn_lines.append(line)
+            if hn_lines:
+                parts.append("Σημειώσεις Υγείας:\n" + "\n".join(hn_lines))
+
+        # Health tracking
+        health_tracking = snap.get("health_tracking") or []
+        if isinstance(health_tracking, list) and health_tracking:
+            ht_lines = []
+            for t in health_tracking[:15]:
+                if isinstance(t, dict):
+                    date = t.get("tracked_at") or t.get("date") or ""
+                    metric = t.get("metric_name") or t.get("metric") or t.get("type") or ""
+                    val = t.get("metric_value") or t.get("value") or ""
+                    unit = t.get("unit") or ""
+                    line = f"{date}: {metric} = {val} {unit}".strip().rstrip(":")
+                    if line.strip(":"): ht_lines.append(line)
+            if ht_lines:
+                parts.append("Παρακολούθηση Υγείας:\n" + "\n".join(ht_lines))
+
+    if not parts:
+        return ""
+
+    return (
+        "\n\nΠΡΟΣΩΠΙΚΑ ΙΑΤΡΙΚΑ ΔΕΔΟΜΕΝΑ ΧΡΗΣΤΗ:\n"
+        + "\n\n".join(parts)
+        + "\n\nΧρησιμοποίησε αυτά τα στοιχεία για να δώσεις προσωποποιημένες απαντήσεις."
+    )
+
+
+def extract_context_from_wp_push(wp_context: dict, message: str = "") -> str:
+    """
+    Extract a formatted medical context string from the wp_context dict.
+    Uses Smart Context Router to select only relevant data based on message intent.
     """
     if not wp_context or not isinstance(wp_context, dict):
         return ""
 
-    # Shape A: pre-formatted context_text
+    # Shape A: pre-formatted context_text (legacy — use as-is)
     ct = wp_context.get("context_text")
     if isinstance(ct, str) and ct.strip():
         return ct.strip()
@@ -231,397 +582,35 @@ def extract_context_from_wp_push(wp_context: dict) -> str:
     # Shape A: unified snapshot
     unified = wp_context.get("unified") or (inner.get("unified") if isinstance(inner, dict) else {}) or {}
     if isinstance(unified, dict) and unified:
-        return build_medical_context_from_aggregator(unified)
+        intents = detect_intent(message) if message else ["full_profile"]
+        return build_selective_context(unified, intents)
 
     # Shape B: Autoa_AI_Context_Builder output
     if "user_profile" in wp_context or "health_data" in wp_context:
-        return build_medical_context_from_builder(wp_context)
+        return build_context_from_builder(wp_context)
 
     # Shape C: helpers.php autoa_rest_chat_proxy snapshot
-    # Keys: user_id, user_name, autoimmune_type, diet_pref, health_info,
-    #        health_profile, recent_checkins, medications, recent_symptoms,
-    #        health_tracking, test_results, health_notes, medication_reminders
-    if any(k in wp_context for k in ("health_info", "autoimmune_type", "user_name", "recent_checkins", "medications", "best_protocol")):
-        return build_medical_context_from_helpers_snapshot(wp_context)
+    if any(k in wp_context for k in ("health_info", "autoimmune_type", "user_name", "recent_checkins", "medications", "best_protocol", "test_results")):
+        intents = detect_intent(message) if message else ["full_profile"]
+        logger.info(f"[CTX] Smart Context Router — intents={intents}")
+        return build_selective_context(wp_context, intents)
 
-    # Shape A fallback: try treating the whole dict as aggregator snapshot
-    return build_medical_context_from_aggregator(wp_context)
-
-
-def build_medical_context_from_helpers_snapshot(snap: dict) -> str:
-    """Build context string from helpers.php autoa_rest_chat_proxy snapshot."""
-    if not snap or not isinstance(snap, dict):
-        return ""
-
-    parts = []
-
-    # User name
-    name = snap.get("user_name")
-    if name:
-        parts.append(f"Όνομα: {name}")
-
-    # Autoimmune condition
-    cond = snap.get("autoimmune_type")
-    if cond:
-        parts.append(f"Αυτοάνοση πάθηση: {cond}")
-
-    # Diet preference
-    diet = snap.get("diet_pref")
-    if diet:
-        parts.append(f"Διατροφή: {diet}")
-
-    # Health info (free text — medication history etc.)
-    health_info = snap.get("health_info")
-    if health_info and isinstance(health_info, str) and health_info.strip():
-        parts.append(f"Ιστορικό φαρμάκων / Υγεία: {health_info.strip()}")
-
-    # Current medications from Medical Memory plugin (with time_slots for scheduled reminders)
-    meds = snap.get("medications") or []
-    if isinstance(meds, list) and meds:
-        med_lines = []
-        for m in meds:
-            if isinstance(m, dict):
-                n = m.get("medication_name") or m.get("name") or m.get("drug_name") or ""
-                dose = m.get("dosage") or m.get("dose") or ""
-                freq = m.get("frequency") or ""
-                time_slots = m.get("time_slots") or []
-                notes = m.get("notes") or ""
-                if n:
-                    line = f"{n}"
-                    if dose:
-                        line += f" {dose}"
-                    if freq:
-                        line += f" ({freq})"
-                    if isinstance(time_slots, list) and time_slots:
-                        line += f" — ώρες λήψης: {', '.join(time_slots)}"
-                    elif isinstance(time_slots, str) and time_slots:
-                        line += f" — ώρες λήψης: {time_slots}"
-                    if notes:
-                        line += f" [{notes[:60]}]"
-                    med_lines.append(line)
-        if med_lines:
-            parts.append("Φάρμακα (Medical Memory):\n" + "\n".join(f"• {l}" for l in med_lines))
-    # Medication schedule (upcoming doses from mm_doses)
-    med_schedule = snap.get("medication_schedule") or []
-    if isinstance(med_schedule, list) and med_schedule:
-        sched_lines = []
-        for d in med_schedule[:10]:
-            if isinstance(d, dict):
-                med_name = d.get("medication_name") or ""
-                dose = d.get("dosage") or ""
-                due = d.get("due_at") or d.get("dose_date") or ""
-                status = d.get("status") or ""
-                if med_name and due:
-                    sched_lines.append(f"{due}: {med_name} {dose} [{status}]".strip())
-        if sched_lines:
-            parts.append("Πρόγραμμα Δόσεων (επόμενες):\n" + "\n".join(sched_lines))
-
-    # Recent check-ins
-    checkins = snap.get("recent_checkins") or []
-    if isinstance(checkins, list) and checkins:
-        ci_lines = []
-        for ci in checkins[:5]:
-            if isinstance(ci, dict):
-                d = ci.get("checkin_date", "")
-                pain = ci.get("pain_level", "")
-                fatigue = ci.get("fatigue_level", "")
-                energy = ci.get("energy_level", "")
-                mood = ci.get("mood_level", "")
-                notes = ci.get("notes", "")
-                line = f"{d}: πόνος={pain}, κόπωση={fatigue}, ενέργεια={energy}, διάθεση={mood}"
-                if notes:
-                    line += f", σημ.: {notes[:60]}"
-                ci_lines.append(line)
-        if ci_lines:
-            parts.append("Καθημερινό Ημερολόγιο Συμπτωμάτων (check-ins — ΞΕΧΩΡΙΣΤΟ ΑΠΟ BEST):\n" + "\n".join(ci_lines))
-
-    # Recent symptoms
-    symptoms = snap.get("recent_symptoms") or []
-    if isinstance(symptoms, list) and symptoms:
-        sym_names = []
-        for s in symptoms[:5]:
-            if isinstance(s, dict):
-                sn = s.get("symptom_name") or s.get("name") or s.get("symptom") or ""
-                if sn:
-                    sym_names.append(sn)
-        if sym_names:
-            parts.append(f"Πρόσφατα συμπτώματα: {', '.join(sym_names)}")
-
-    # Health profile table
-    hp = snap.get("health_profile")
-    if isinstance(hp, dict) and hp:
-        hp_parts = []
-        for k, v in hp.items():
-            if v and k not in ("id", "user_id", "created_at", "updated_at"):
-                hp_parts.append(f"{k}: {v}")
-        if hp_parts:
-            parts.append("Προφίλ υγείας: " + ", ".join(hp_parts[:8]))
-
-    # BEST Protocol (from autoanosis_medical_snapshot_last) — ALL FIELDS v5.8.0
-    # Enhanced search for BEST data in various keys
-    best = snap.get("best_protocol") or snap.get("autoanosis_best_protocol") or snap.get("medical_snapshot")
-    
-    # If it's a list (sometimes happens in aggregator), take the first element if it looks like BEST
-    if isinstance(best, list) and best:
-        best = best[0]
-        
-    if best and isinstance(best, dict):
-        bp = []
-        # Visit info
-        if best.get("visit_date"):    bp.append(f"Ημερομηνία Ραντεβού: {best['visit_date']}")
-        if best.get("visit_doctor"):  bp.append(f"Ιατρός/Ειδικότητα: {best['visit_doctor']}")
-        if best.get("visit_goal"):    bp.append(f"Στόχος επίσκεψης: {best['visit_goal']}")
-        if best.get("visit_period"):  bp.append(f"Περίοδος αναφοράς: {best['visit_period']}")
-        # B — Baseline
-        if best.get("b_meds"):        bp.append(f"[B] Φάρμακα & δοσολογία: {best['b_meds']}")
-        _b_adh = best.get("b_adherence") or best.get("b_side")
-        if _b_adh:                    bp.append(f"[B] Συμμόρφωση & παρενέργειες: {_b_adh}")
-        if best.get("b_labs"):        bp.append(f"[B] Εξετάσεις εκτός ορίων: {best['b_labs']}")
-        _b_notes = best.get("b_notes") or best.get("b_baseline")
-        if _b_notes:                  bp.append(f"[B] Σημειώσεις baseline (ύπνος/ενέργεια/πίεση): {_b_notes}")
-        # E — Events
-        if best.get("e_infections"):  bp.append(f"[E] Λοιμώξεις/Ιώσεις: {best['e_infections']}")
-        if best.get("e_stress"):      bp.append(f"[E] Στρεσογόνα γεγονότα: {best['e_stress']}")
-        _e_life = best.get("e_lifestyle") or best.get("e_events")
-        if _e_life:                   bp.append(f"[E] Αλλαγές τρόπου ζωής: {_e_life}")
-        if best.get("e_other"):       bp.append(f"[E] Άλλα συμβάντα: {best['e_other']}")
-        # S — Symptoms (table: s1, s2, s3 + free text fields)
-        _s_rows = []
-        for i in [1, 2, 3]:
-            sn = best.get(f"s{i}_name", "").strip()
-            sv = best.get(f"s{i}_vas", "") 
-            sp = best.get(f"s{i}_peak", "").strip()
-            sw = best.get(f"s{i}_worse", "").strip()
-            sb = best.get(f"s{i}_better", "").strip()
-            if sn:
-                row = f"{sn} VAS={sv}"
-                if sp: row += f" | Ώρες αιχμής: {sp}"
-                if sw: row += f" | Χειροτερεύει: {sw}"
-                if sb: row += f" | Βελτιώνεται: {sb}"
-                _s_rows.append(row)
-        if _s_rows:
-            bp.append(f"[S] Συμπτώματα: " + " / ".join(_s_rows))
-        # Also check old flat s_symptoms field
-        if best.get("s_symptoms"):    bp.append(f"[S] Συμπτώματα (επιπλέον): {best['s_symptoms']}")
-        _s_tl = best.get("s_timeline") or best.get("s_timing")
-        if _s_tl:                     bp.append(f"[S] Χρονική χαρτογράφηση: {_s_tl}")
-        _s_fn = best.get("s_functional") or best.get("s_impact")
-        if _s_fn:                     bp.append(f"[S] Λειτουργικός αντίκτυπος: {_s_fn}")
-        # T — Targets
-        _t_qol = best.get("t_qol") or best.get("t_goals")
-        if _t_qol:                    bp.append(f"[T] Στόχοι ποιότητας ζωής: {_t_qol}")
-        if best.get("t_biomarkers"):  bp.append(f"[T] Στόχοι βιοδεικτών: {best['t_biomarkers']}")
-        if best.get("t_questions"):   bp.append(f"[T] Ερωτήσεις προς ιατρό: {best['t_questions']}")
-        _t_plan = best.get("t_plan") or best.get("t_treatments")
-        if _t_plan:                   bp.append(f"[T] Πλάνο/Θεραπείες: {_t_plan}")
-        # Timestamp of BEST entry
-        _ts = best.get("ts") or best.get("timestamp") or best.get("saved_at")
-        if _ts:                       bp.append(f"[Ημ/νία καταχώρισης BEST: {_ts}]")
-        if bp:
-            parts.append("BEST Protocol (Προετοιμασία Ραντεβού — B.E.S.T.):\n" + "\n".join(bp))
-
-    # BEST History (all previous BEST entries, newest first) — v5.15.4
-    # De-dup at app.py level by visit_date+visit_doctor (handles timestamp=0 duplicates from helpers.php)
-    best_history = snap.get("best_history")
-    if best_history and isinstance(best_history, list) and len(best_history) >= 1:
-        # De-dup by visit_date + visit_doctor signature
-        _seen_sigs = set()
-        _deduped = []
-        for _h in best_history:
-            if not isinstance(_h, dict): continue
-            _ep = _h.get("payload") if ("payload" in _h and isinstance(_h.get("payload"), dict)) else _h
-            _sig = f"{_ep.get('visit_date','')}|{_ep.get('visit_doctor','')}"
-            if _sig in _seen_sigs: continue
-            _seen_sigs.add(_sig)
-            _deduped.append(_h)
-        best_history = _deduped
-        # Show ALL history entries with dates
-        # If best_protocol already shown (index 0), show remaining; if not shown, show all
-        hist_lines = [f"Σύνολο καταχωρήσεων BEST: {len(best_history)}"]
-        start_idx = 1 if any("BEST Protocol" in p for p in parts) else 0
-        for idx, entry in enumerate(best_history[start_idx:], start=start_idx + 1):
-            if not isinstance(entry, dict):
-                continue
-            ts_raw = entry.get("_saved_ts") or entry.get("ts") or entry.get("timestamp") or ""
-            # Support {ts, payload} format from helpers.php
-            e = entry.get("payload") if ("payload" in entry and isinstance(entry.get("payload"), dict)) else entry
-            ts_str = ""
-            if ts_raw:
-                try:
-                    ts_str = f" [{datetime.fromtimestamp(int(ts_raw)).strftime('%Y-%m-%d')}]"
-                except Exception:
-                    ts_str = f" [{ts_raw}]"
-            vd = e.get("visit_date", "")
-            vdr = e.get("visit_doctor", "")
-            vg = e.get("visit_goal", "")
-            header = f"  Καταχώρηση #{idx}{ts_str}: Ραντεβού {vd} — {vdr}"
-            if vg: header += f" ({vg})"
-            hist_lines.append(header)
-            # All key fields for history entries
-            if e.get("b_meds"): hist_lines.append(f"    Φάρμακα: {e['b_meds']}")
-            if e.get("b_notes"): hist_lines.append(f"    Σημειώσεις: {e['b_notes']}")
-            if e.get("b_labs"): hist_lines.append(f"    Εξετάσεις: {e['b_labs']}")
-            if e.get("e_stress"): hist_lines.append(f"    Στρες: {e['e_stress']}")
-            if e.get("e_infections"): hist_lines.append(f"    Λοιμώξεις: {e['e_infections']}")
-            if e.get("e_other"): hist_lines.append(f"    Άλλα: {e['e_other']}")
-            # Symptoms (up to 5)
-            for i in [1, 2, 3, 4, 5]:
-                sn = e.get(f"s{i}_name", "").strip()
-                sv = e.get(f"s{i}_vas", "")
-                sw = e.get(f"s{i}_worse", "").strip()
-                sb = e.get(f"s{i}_better", "").strip()
-                if sn:
-                    s_line = f"    Σύμπτωμα: {sn} VAS={sv}"
-                    if sw: s_line += f" | Χειροτ.: {sw}"
-                    if sb: s_line += f" | Βελτ.: {sb}"
-                    hist_lines.append(s_line)
-            _t = e.get("t_qol") or e.get("t_goals")
-            if _t: hist_lines.append(f"    Στόχος ποιότητας ζωής: {_t}")
-            _tp = e.get("t_plan") or e.get("t_treatments")
-            if _tp: hist_lines.append(f"    Πλάνο/Ερωτήσεις: {_tp}")
-        if hist_lines and len(hist_lines) > 1:  # > 1 because first line is the count header
-            parts.append("Ιστορικό BEST (όλες οι καταχωρήσεις με ημερομηνίες):\n" + "\n".join(hist_lines))
-        elif hist_lines:  # only the count header, no entries (all already shown in best_protocol)
-            parts.append(f"Σύνολο BEST καταχωρήσεων: {len(best_history)} (η τρέχουσα εγγραφή εμφανίζεται παραπάνω)")
-
-    # best_summary fallback (text version built by helpers.php)
-    best_summary = snap.get("best_summary")
-    if best_summary and isinstance(best_summary, str) and best_summary.strip():
-        if not any("BEST Protocol" in p for p in parts):
-            parts.append(f"BEST Protocol (σύνοψη):\n{best_summary.strip()}")
-
-    # Medical memory / BEST summary text
-    memory = snap.get("medical_memory") or snap.get("autoanosis_medical_memory")
-    if memory and isinstance(memory, str) and memory.strip():
-        if not any("BEST" in p for p in parts):
-            parts.append(f"Προετοιμασία Ραντεβού (B.E.S.T.):\n{memory.strip()}")
-
-    # Test results (lab results with dates)
-    test_results = snap.get("test_results") or []
-    if isinstance(test_results, list) and test_results:
-        res_lines = []
-        for r in test_results:
-            if isinstance(r, dict):
-                date = r.get("test_date") or r.get("created_at") or ""
-                name = r.get("test_name") or r.get("name") or ""
-                val  = r.get("result_value") or r.get("value") or ""
-                unit = r.get("unit") or ""
-                note = r.get("notes") or r.get("note") or ""
-                line = f"{date}: {name} = {val} {unit}".strip().rstrip(":")
-                if note: line += f" ({note[:80]})"
-                if line.strip(":"): res_lines.append(line)
-        if res_lines:
-            parts.append("Αποτελέσματα Εξετάσεων (με ημερομηνία):\n" + "\n".join(res_lines))
-
-    # Health notes
-    health_notes = snap.get("health_notes") or []
-    if isinstance(health_notes, list) and health_notes:
-        hn_lines = []
-        for n in health_notes:
-            if isinstance(n, dict):
-                date  = n.get("created_at") or n.get("date") or ""
-                title = n.get("note_title") or n.get("title") or ""
-                body  = n.get("note_content") or n.get("content") or n.get("note") or ""
-                line  = f"{date}: {title} — {body[:120]}".strip().rstrip("—").strip()
-                if line.strip(":"): hn_lines.append(line)
-        if hn_lines:
-            parts.append("Σημειώσεις Υγείας:\n" + "\n".join(hn_lines))
-
-    # Health tracking (with timestamps)
-    health_tracking = snap.get("health_tracking") or []
-    if isinstance(health_tracking, list) and health_tracking:
-        ht_lines = []
-        for t in health_tracking[:15]:
-            if isinstance(t, dict):
-                date   = t.get("tracked_at") or t.get("date") or ""
-                metric = t.get("metric_name") or t.get("metric") or t.get("type") or ""
-                val    = t.get("metric_value") or t.get("value") or ""
-                unit   = t.get("unit") or ""
-                line   = f"{date}: {metric} = {val} {unit}".strip().rstrip(":")
-                if line.strip(":"): ht_lines.append(line)
-        if ht_lines:
-            parts.append("Παρακολούθηση Υγείας:\n" + "\n".join(ht_lines))
-
-    if not parts:
-        return ""
-
-    return (
-        "\n\nΠΡΟΣΩΠΙΚΑ ΙΑΤΡΙΚΑ ΔΕΔΟΜΕΝΑ ΧΡΗΣΤΗ:\n"
-        + "\n".join(parts)
-        + "\n\nΧρησιμοποίησε αυτά τα στοιχεία για να δώσεις προσωποποιημένες απαντήσεις."
-    )
+    # Fallback: treat as aggregator snapshot
+    intents = detect_intent(message) if message else ["full_profile"]
+    return build_selective_context(wp_context, intents)
 
 
-def build_medical_context_from_aggregator(snapshot: dict) -> str:
-    """Build context string from aggregator snapshot dict."""
-    if not snapshot or not isinstance(snapshot, dict):
-        return ""
-
-    parts = []
-
-    meds = snapshot.get("autoanosis_medications") or snapshot.get("medications") or []
-    if isinstance(meds, list) and meds:
-        names = [m.get("name") or m.get("medication_name", "") for m in meds if isinstance(m, dict)]
-        names = [n for n in names if n]
-        if names:
-            parts.append(f"Φάρμακα: {', '.join(names)}")
-
-    conds = snapshot.get("autoanosis_conditions") or snapshot.get("conditions") or []
-    if isinstance(conds, list) and conds:
-        names = [c.get("name", "") for c in conds if isinstance(c, dict) and c.get("name")]
-        if names:
-            parts.append(f"Παθήσεις: {', '.join(names)}")
-
-    allergies = snapshot.get("autoanosis_allergies") or snapshot.get("allergies") or []
-    if isinstance(allergies, list) and allergies:
-        names = [a.get("name", "") for a in allergies if isinstance(a, dict) and a.get("name")]
-        if names:
-            parts.append(f"Αλλεργίες: {', '.join(names)}")
-
-    memory = snapshot.get("autoanosis_medical_memory") or snapshot.get("medical_memory")
-    if memory:
-        if isinstance(memory, str) and memory.strip():
-            parts.append(f"Προετοιμασία Ραντεβού (B.E.S.T.):\n{memory}")
-        elif isinstance(memory, list):
-            notes = [m.get("note", "") for m in memory[:3] if isinstance(m, dict) and m.get("note")]
-            if notes:
-                parts.append(f"Σημειώσεις: {'; '.join(notes)}")
-
-    best = snapshot.get("autoanosis_best_protocol") or snapshot.get("best_protocol")
-    if best and isinstance(best, dict):
-        bp = []
-        if best.get("visit_doctor"): bp.append(f"Ιατρός: {best['visit_doctor']}")
-        if best.get("visit_goal"):   bp.append(f"Στόχος: {best['visit_goal']}")
-        if best.get("b_labs"):       bp.append(f"Baseline: {best['b_labs']}")
-        if best.get("e_infections"): bp.append(f"Λοιμώξεις: {best['e_infections']}")
-        if best.get("e_stress"):     bp.append(f"Stress: {best['e_stress']}")
-        if bp and not any("B.E.S.T." in p for p in parts):
-            parts.append("BEST Protocol:\n" + "\n".join(bp))
-
-    if not parts:
-        return ""
-
-    return (
-        "\n\nΠΡΟΣΩΠΙΚΑ ΙΑΤΡΙΚΑ ΔΕΔΟΜΕΝΑ ΧΡΗΣΤΗ:\n"
-        + "\n".join(parts)
-        + "\n\nΧρησιμοποίησε αυτά τα στοιχεία για να δώσεις προσωποποιημένες απαντήσεις."
-    )
-
-
-def build_medical_context_from_builder(ctx: dict) -> str:
+def build_context_from_builder(ctx: dict) -> str:
     """Build context string from Autoa_AI_Context_Builder::build_context() output."""
     if not ctx or not isinstance(ctx, dict):
         return ""
-
     parts = []
-
     profile = ctx.get("user_profile") or {}
     if isinstance(profile, dict):
         if profile.get("condition"):
             parts.append(f"Πάθηση: {profile['condition']}")
         if profile.get("name"):
             parts.append(f"Χρήστης: {profile['name']}")
-
     health = ctx.get("health_data") or {}
     if isinstance(health, dict):
         if health.get("health_information"):
@@ -632,22 +621,16 @@ def build_medical_context_from_builder(ctx: dict) -> str:
                 parts.append(f"Συμπτώματα: {', '.join(str(s) for s in symptoms)}")
             elif isinstance(symptoms, str) and symptoms.strip():
                 parts.append(f"Συμπτώματα: {symptoms}")
-
     checkins = ctx.get("recent_checkins") or {}
     if isinstance(checkins, dict) and checkins.get("averages"):
         avg = checkins["averages"]
         parts.append(
             f"Μέσοι όροι τελευταίων ημερών — "
-            f"Πόνος: {avg.get('pain','?')}/10, "
-            f"Κόπωση: {avg.get('fatigue','?')}/10, "
-            f"Ενέργεια: {avg.get('energy','?')}/10, "
-            f"Διάθεση: {avg.get('mood','?')}/10"
+            f"Πόνος: {avg.get('pain', '?')}/10, "
+            f"Κόπωση: {avg.get('fatigue', '?')}/10, "
+            f"Ενέργεια: {avg.get('energy', '?')}/10, "
+            f"Διάθεση: {avg.get('mood', '?')}/10"
         )
-        trend_map = {"improving": "βελτιώνονται", "worsening": "επιδεινώνονται", "stable": "σταθερά"}
-        trend = checkins.get("trend")
-        if trend and trend in trend_map:
-            parts.append(f"Τάση: Τα συμπτώματα {trend_map[trend]}")
-
     meds = ctx.get("medications") or {}
     if isinstance(meds, dict):
         current = meds.get("current_medications") or []
@@ -660,55 +643,538 @@ def build_medical_context_from_builder(ctx: dict) -> str:
                     med_names.append(m)
             if med_names:
                 parts.append(f"Φάρμακα: {', '.join(med_names)}")
-
-    lifestyle = ctx.get("lifestyle") or {}
-    if isinstance(lifestyle, dict):
-        if lifestyle.get("diet_plan"):
-            parts.append(f"Διατροφή: {lifestyle['diet_plan']}")
-        triggers = lifestyle.get("trigger_foods")
-        if triggers:
-            if isinstance(triggers, list):
-                parts.append(f"Τρόφιμα που επιδεινώνουν: {', '.join(str(t) for t in triggers)}")
-            elif isinstance(triggers, str) and triggers.strip():
-                parts.append(f"Τρόφιμα που επιδεινώνουν: {triggers}")
-        if lifestyle.get("stress_level"):
-            parts.append(f"Επίπεδο στρες: {lifestyle['stress_level']}/10")
-
     if not parts:
         return ""
-
     return (
         "\n\nΠΡΟΣΩΠΙΚΑ ΙΑΤΡΙΚΑ ΔΕΔΟΜΕΝΑ ΧΡΗΣΤΗ:\n"
         + "\n".join(parts)
         + "\n\nΧρησιμοποίησε αυτά τα στοιχεία για να δώσεις προσωποποιημένες απαντήσεις."
     )
 
-# ---------------------------------------------------------------------------
-# Health check
-# ---------------------------------------------------------------------------
+
+# ===========================================================================
+# SYSTEM PROMPTS
+# ===========================================================================
+
+SYSTEM_PROMPT_BASE = """Είσαι ο Autoanosis Assistant, ένας εξειδικευμένος βοηθός υγείας στα ελληνικά.
+Παρέχεις:
+- Ακριβείς και επιστημονικά τεκμηριωμένες πληροφορίες υγείας
+- Φιλικές και κατανοητές απαντήσεις
+- Υποστήριξη σε θέματα υγείας, φαρμάκων, συμπτωμάτων
+Σημαντικό:
+- ΔΕΝ αντικαθιστάς ιατρική συμβουλή
+- Συνιστάς πάντα επίσκεψη σε γιατρό για σοβαρά θέματα
+- Απαντάς στα ελληνικά"""
+
+def build_system_prompt(snapshot: str, intents: list[str]) -> str:
+    """Build system prompt based on available context and detected intents."""
+    if not snapshot:
+        return SYSTEM_PROMPT_BASE
+
+    intent_instructions = {
+        "medications": "Εστίασε στα φάρμακα, δοσολογία, ώρες λήψης και παρενέργειες.",
+        "test_results": "Εστίασε στα αποτελέσματα εξετάσεων. Ανέφερε ΟΛΑ τα αποτελέσματα με τιμές, μονάδες και φυσιολογικά όρια.",
+        "best_protocol": "Εστίασε στο BEST Protocol. Ανέφερε ΟΛΑ τα BEST entries με ημερομηνίες και λεπτομέρειες.",
+        "checkins": "Εστίασε στο ημερολόγιο συμπτωμάτων. Ανέφερε τάσεις και μεταβολές.",
+        "symptoms": "Εστίασε στα συμπτώματα. Ανέφερε πότε εμφανίστηκαν, ένταση και τάσεις.",
+        "full_profile": "Παρουσίασε ΟΛΕΣ τις κατηγορίες δεδομένων: φάρμακα, εξετάσεις, BEST, check-ins, συμπτώματα. ΜΗΝ παραλείπεις καμία κατηγορία.",
+        "pattern_detection": "Ανάλυσε τάσεις και μοτίβα στα δεδομένα. Εντόπισε συσχετίσεις μεταξύ συμπτωμάτων, εξετάσεων και γεγονότων.",
+        "report": "Ο χρήστης ζητά έκθεση για γιατρό. Πες του να χρησιμοποιήσει το κουμπί 'Δημιουργία Ιατρικής Έκθεσης'.",
+    }
+
+    specific_instructions = []
+    for intent in intents:
+        if intent in intent_instructions:
+            specific_instructions.append(intent_instructions[intent])
+
+    prompt = f"""Είσαι ο Autoanosis Assistant, ένας εξειδικευμένος βοηθός υγείας στα ελληνικά.
+
+ΟΡΙΣΜΟΙ (ΚΡΙΣΙΜΟ):
+- Το B.E.S.T. στο Autoanosis είναι πρωτόκολλο προετοιμασίας ραντεβού (Baseline, Events, Symptoms, Targets). ΔΕΝ είναι εξέταση αίματος.
+- Αν δεν υπάρχει κάποιο πεδίο στο context, λες "Δεν έχει καταγραφεί ακόμα" — ΔΕΝ επινοείς.
+
+ΙΑΤΡΙΚΟ ΠΡΟΦΙΛ ΧΡΗΣΤΗ (ΥΠΟΧΡΕΩΤΙΚΗ ΧΡΗΣΗ):
+{snapshot}
+
+ΚΑΝΟΝΕΣ (ΥΠΟΧΡΕΩΤΙΚΟΙ):
+- ΕΧΕΙΣ πρόσβαση στα παραπάνω ιατρικά δεδομένα και ΠΡΕΠΕΙ να τα χρησιμοποιείς ΠΑΝΤΑ.
+- ΜΗΝ πεις ΠΟΤΕ "δεν έχω πρόσβαση" ή "δεν μπορώ να δω προσωπικά δεδομένα".
+- Αν κάτι λείπει από το προφίλ, πες "δεν εμφανίζεται στο προφίλ υγείας σου".
+- ΜΟΝΟ τα δεδομένα που βλέπεις παραπάνω είναι αληθινά — τίποτα άλλο.
+- Όταν αναφέρεις φάρμακα, ΠΑΝΤΑ ανέφερε και τις ώρες λήψης αν υπάρχουν.
+- Απαντάς στα ελληνικά.
+- ΔΕΝ αντικαθιστάς ιατρική συμβουλή."""
+
+    if specific_instructions:
+        prompt += "\n\nΟΔΗΓΙΕΣ ΓΙΑ ΑΥΤΗ ΤΗΝ ΕΡΩΤΗΣΗ:\n" + "\n".join(f"• {i}" for i in specific_instructions)
+
+    return prompt
+
+
+# ===========================================================================
+# MEDICAL REPORT GENERATOR — Three-Pass System
+# ===========================================================================
+
+def generate_medical_report_pdf(snap: dict, user_id: int) -> bytes:
+    """
+    Generate a complete medical report PDF using three-pass system:
+    Pass 1: Data aggregation (all categories)
+    Pass 2: AI analysis per category
+    Pass 3: PDF assembly
+    Returns PDF bytes.
+    """
+    client = get_openai_client()
+    now_str = datetime.now().strftime("%d/%m/%Y %H:%M")
+    patient_name = snap.get("user_name") or f"Χρήστης #{user_id}"
+    condition = snap.get("autoimmune_type") or "Αυτοάνοσο Νόσημα"
+
+    # --- PASS 1: Data Aggregation ---
+    sections = {}
+
+    # Profile
+    profile_lines = []
+    if snap.get("user_name"):      profile_lines.append(f"Όνομα: {snap['user_name']}")
+    if snap.get("autoimmune_type"): profile_lines.append(f"Διάγνωση: {snap['autoimmune_type']}")
+    if snap.get("diet_pref"):       profile_lines.append(f"Διατροφή: {snap['diet_pref']}")
+    if snap.get("health_info"):     profile_lines.append(f"Ιστορικό: {snap['health_info']}")
+    sections["profile"] = "\n".join(profile_lines)
+
+    # Medications
+    meds = snap.get("medications") or []
+    med_lines = []
+    for m in meds:
+        if isinstance(m, dict):
+            n = m.get("medication_name") or m.get("name") or ""
+            dose = m.get("dosage") or ""
+            freq = m.get("frequency") or ""
+            slots = m.get("time_slots") or []
+            if n:
+                line = f"{n} {dose} {freq}".strip()
+                if isinstance(slots, list) and slots:
+                    line += f" — {', '.join(slots)}"
+                elif isinstance(slots, str) and slots:
+                    line += f" — {slots}"
+                med_lines.append(line)
+    sections["medications"] = "\n".join(med_lines) if med_lines else "Δεν καταγράφηκαν φάρμακα."
+
+    # Test Results
+    tests = snap.get("test_results") or []
+    test_lines = []
+    for r in tests:
+        if isinstance(r, dict):
+            date = r.get("test_date") or ""
+            name_t = r.get("test_name") or ""
+            val = r.get("result_value") or ""
+            unit = r.get("unit") or ""
+            ref = r.get("reference_range") or ""
+            status = r.get("status") or ""
+            line = f"{date}: {name_t} = {val} {unit}"
+            if ref: line += f" (Φυσ.: {ref})"
+            if status: line += f" [{status}]"
+            test_lines.append(line)
+    sections["tests"] = "\n".join(test_lines) if test_lines else "Δεν καταγράφηκαν εξετάσεις."
+
+    # BEST Protocol
+    best = snap.get("best_protocol") or {}
+    if isinstance(best, list) and best:
+        best = best[0]
+    best_lines = []
+    if isinstance(best, dict) and best:
+        for key, label in [
+            ("visit_date", "Ημερομηνία"), ("visit_doctor", "Ιατρός"),
+            ("visit_goal", "Στόχος"), ("b_meds", "Φάρμακα"),
+            ("b_labs", "Εξετάσεις"), ("e_stress", "Στρες"),
+            ("e_infections", "Λοιμώξεις"), ("t_qol", "Στόχοι"),
+            ("t_questions", "Ερωτήσεις"),
+        ]:
+            if best.get(key):
+                best_lines.append(f"{label}: {best[key]}")
+        for i in [1, 2, 3, 4, 5]:
+            sn = best.get(f"s{i}_name", "").strip() if best.get(f"s{i}_name") else ""
+            sv = best.get(f"s{i}_vas", "")
+            if sn:
+                best_lines.append(f"Σύμπτωμα {i}: {sn} VAS={sv}")
+    sections["best"] = "\n".join(best_lines) if best_lines else "Δεν καταγράφηκε BEST Protocol."
+
+    # Check-ins summary
+    checkins = snap.get("recent_checkins") or []
+    ci_lines = []
+    for ci in checkins[:7]:
+        if isinstance(ci, dict):
+            d = ci.get("checkin_date", "")
+            pain = ci.get("pain_level", "")
+            fatigue = ci.get("fatigue_level", "")
+            energy = ci.get("energy_level", "")
+            mood = ci.get("mood_level", "")
+            ci_lines.append(f"{d}: πόνος={pain}, κόπωση={fatigue}, ενέργεια={energy}, διάθεση={mood}")
+    sections["checkins"] = "\n".join(ci_lines) if ci_lines else "Δεν καταγράφηκαν check-ins."
+
+    # --- PASS 2: AI Analysis per category ---
+    analyses = {}
+
+    def ai_analyze(section_name: str, data: str, instruction: str) -> str:
+        if data.strip() in ["Δεν καταγράφηκαν φάρμακα.", "Δεν καταγράφηκαν εξετάσεις.", "Δεν καταγράφηκε BEST Protocol.", "Δεν καταγράφηκαν check-ins."]:
+            return "Δεν υπάρχουν δεδομένα για ανάλυση."
+        try:
+            resp = client.chat.completions.create(
+                model="gpt-4o-mini",
+                messages=[
+                    {"role": "system", "content": f"Είσαι ιατρικός αναλυτής. Αναλύεις δεδομένα ασθενούς με αυτοάνοσο νόσημα ({condition}). Γράφεις στα ελληνικά. Είσαι σύντομος και κλινικά ακριβής. ΔΕΝ επινοείς δεδομένα."},
+                    {"role": "user", "content": f"{instruction}\n\nΔεδομένα:\n{data}"}
+                ],
+                temperature=0.3,
+                max_tokens=600,
+                timeout=45
+            )
+            return resp.choices[0].message.content.strip()
+        except Exception as e:
+            logger.error(f"[REPORT] AI analysis error for {section_name}: {e}")
+            return f"Δεν ήταν δυνατή η ανάλυση: {str(e)[:100]}"
+
+    analyses["medications"] = ai_analyze(
+        "medications",
+        sections["medications"],
+        "Σύνοψη τρέχουσας φαρμακευτικής αγωγής. Ανέφερε φάρμακα, δοσολογία, ώρες λήψης. Σημείωσε αν υπάρχουν πιθανές αλληλεπιδράσεις ή σημαντικές παρατηρήσεις."
+    )
+
+    analyses["tests"] = ai_analyze(
+        "tests",
+        sections["tests"],
+        "Ανάλυση αποτελεσμάτων εξετάσεων. Ποιες τιμές είναι εκτός φυσιολογικών ορίων; Ποιες είναι φυσιολογικές; Τι κλινική σημασία έχουν για ασθενή με αυτοάνοσο;"
+    )
+
+    analyses["best"] = ai_analyze(
+        "best",
+        sections["best"],
+        "Σύνοψη BEST Protocol. Ποιο είναι το κύριο θέμα της επίσκεψης; Ποια συμπτώματα αναφέρονται; Ποιες ερωτήσεις έχει ο ασθενής για τον γιατρό;"
+    )
+
+    analyses["checkins"] = ai_analyze(
+        "checkins",
+        sections["checkins"],
+        "Ανάλυση καθημερινού ημερολογίου. Ποια είναι η τάση (βελτίωση/επιδείνωση/σταθερά); Ποιες μέρες ήταν χειρότερες; Ποιο σύμπτωμα κυριαρχεί;"
+    )
+
+    # Overall clinical summary
+    all_data_summary = f"""
+Ασθενής: {patient_name}
+Διάγνωση: {condition}
+
+ΦΑΡΜΑΚΑ:
+{sections['medications']}
+
+ΕΞΕΤΑΣΕΙΣ:
+{sections['tests']}
+
+BEST PROTOCOL:
+{sections['best']}
+
+CHECK-INS (τελευταίες 7 ημέρες):
+{sections['checkins']}
+"""
+    try:
+        overall_resp = client.chat.completions.create(
+            model="gpt-4o-mini",
+            messages=[
+                {"role": "system", "content": "Είσαι ιατρικός αναλυτής. Γράφεις σύντομη κλινική σύνοψη για γιατρό. Στα ελληνικά. Κλινικά ακριβής. ΔΕΝ επινοείς."},
+                {"role": "user", "content": f"Γράψε σύντομη κλινική σύνοψη (3-5 παράγραφοι) για τον γιατρό βάσει αυτών των δεδομένων:\n{all_data_summary}"}
+            ],
+            temperature=0.3,
+            max_tokens=800,
+            timeout=60
+        )
+        overall_analysis = overall_resp.choices[0].message.content.strip()
+    except Exception as e:
+        logger.error(f"[REPORT] Overall analysis error: {e}")
+        overall_analysis = "Δεν ήταν δυνατή η δημιουργία συνολικής ανάλυσης."
+
+    # --- PASS 3: PDF Assembly ---
+    try:
+        from reportlab.lib.pagesizes import A4
+        from reportlab.lib.styles import getSampleStyleSheet, ParagraphStyle
+        from reportlab.lib.units import cm
+        from reportlab.lib.colors import HexColor, white, black
+        from reportlab.platypus import SimpleDocTemplate, Paragraph, Spacer, Table, TableStyle, HRFlowable
+        from reportlab.lib.enums import TA_CENTER, TA_LEFT, TA_RIGHT
+        from reportlab.pdfbase import pdfmetrics
+        from reportlab.pdfbase.ttfonts import TTFont
+
+        buffer = io.BytesIO()
+        doc = SimpleDocTemplate(
+            buffer,
+            pagesize=A4,
+            rightMargin=2*cm,
+            leftMargin=2*cm,
+            topMargin=2*cm,
+            bottomMargin=2*cm,
+            title=f"Ιατρική Έκθεση — {patient_name}",
+            author="Autoanosis Platform"
+        )
+
+        # Colors
+        purple_dark = HexColor("#6B21A8")
+        purple_mid = HexColor("#7C3AED")
+        purple_light = HexColor("#EDE9FE")
+        gray_light = HexColor("#F3F4F6")
+        gray_mid = HexColor("#6B7280")
+
+        styles = getSampleStyleSheet()
+
+        # Custom styles
+        title_style = ParagraphStyle(
+            "Title", parent=styles["Normal"],
+            fontSize=22, fontName="Helvetica-Bold",
+            textColor=white, alignment=TA_CENTER,
+            spaceAfter=6
+        )
+        subtitle_style = ParagraphStyle(
+            "Subtitle", parent=styles["Normal"],
+            fontSize=11, fontName="Helvetica",
+            textColor=white, alignment=TA_CENTER,
+            spaceAfter=4
+        )
+        section_header_style = ParagraphStyle(
+            "SectionHeader", parent=styles["Normal"],
+            fontSize=13, fontName="Helvetica-Bold",
+            textColor=white, alignment=TA_LEFT,
+            leftIndent=8, spaceAfter=4, spaceBefore=4
+        )
+        body_style = ParagraphStyle(
+            "Body", parent=styles["Normal"],
+            fontSize=10, fontName="Helvetica",
+            textColor=black, alignment=TA_LEFT,
+            spaceAfter=4, leading=14
+        )
+        analysis_style = ParagraphStyle(
+            "Analysis", parent=styles["Normal"],
+            fontSize=9.5, fontName="Helvetica",
+            textColor=HexColor("#1F2937"), alignment=TA_LEFT,
+            spaceAfter=4, leading=13,
+            leftIndent=4
+        )
+        label_style = ParagraphStyle(
+            "Label", parent=styles["Normal"],
+            fontSize=9, fontName="Helvetica-Bold",
+            textColor=gray_mid, alignment=TA_LEFT,
+            spaceAfter=2
+        )
+        footer_style = ParagraphStyle(
+            "Footer", parent=styles["Normal"],
+            fontSize=8, fontName="Helvetica",
+            textColor=gray_mid, alignment=TA_CENTER
+        )
+
+        story = []
+
+        # --- COVER HEADER ---
+        header_data = [[
+            Paragraph(f"ΙΑΤΡΙΚΗ ΕΚΘΕΣΗ", title_style),
+        ]]
+        header_table = Table(header_data, colWidths=[17*cm])
+        header_table.setStyle(TableStyle([
+            ("BACKGROUND", (0, 0), (-1, -1), purple_dark),
+            ("TOPPADDING", (0, 0), (-1, -1), 16),
+            ("BOTTOMPADDING", (0, 0), (-1, -1), 8),
+            ("LEFTPADDING", (0, 0), (-1, -1), 12),
+            ("RIGHTPADDING", (0, 0), (-1, -1), 12),
+            ("ROUNDEDCORNERS", [6, 6, 6, 6]),
+        ]))
+        story.append(header_table)
+
+        # Subtitle row
+        subtitle_data = [[
+            Paragraph(f"Autoanosis Platform  •  {now_str}", subtitle_style),
+        ]]
+        subtitle_table = Table(subtitle_data, colWidths=[17*cm])
+        subtitle_table.setStyle(TableStyle([
+            ("BACKGROUND", (0, 0), (-1, -1), purple_mid),
+            ("TOPPADDING", (0, 0), (-1, -1), 6),
+            ("BOTTOMPADDING", (0, 0), (-1, -1), 10),
+            ("LEFTPADDING", (0, 0), (-1, -1), 12),
+            ("RIGHTPADDING", (0, 0), (-1, -1), 12),
+        ]))
+        story.append(subtitle_table)
+        story.append(Spacer(1, 0.4*cm))
+
+        # --- PATIENT INFO BOX ---
+        info_rows = [
+            [Paragraph("<b>Ασθενής:</b>", body_style), Paragraph(patient_name, body_style)],
+            [Paragraph("<b>Διάγνωση:</b>", body_style), Paragraph(condition, body_style)],
+            [Paragraph("<b>Ημερομηνία Έκθεσης:</b>", body_style), Paragraph(now_str, body_style)],
+        ]
+        if snap.get("diet_pref"):
+            info_rows.append([Paragraph("<b>Διατροφή:</b>", body_style), Paragraph(snap["diet_pref"], body_style)])
+
+        info_table = Table(info_rows, colWidths=[5*cm, 12*cm])
+        info_table.setStyle(TableStyle([
+            ("BACKGROUND", (0, 0), (-1, -1), purple_light),
+            ("TOPPADDING", (0, 0), (-1, -1), 5),
+            ("BOTTOMPADDING", (0, 0), (-1, -1), 5),
+            ("LEFTPADDING", (0, 0), (-1, -1), 10),
+            ("RIGHTPADDING", (0, 0), (-1, -1), 10),
+            ("GRID", (0, 0), (-1, -1), 0.5, HexColor("#DDD6FE")),
+        ]))
+        story.append(info_table)
+        story.append(Spacer(1, 0.5*cm))
+
+        # --- DISCLAIMER ---
+        disclaimer = Paragraph(
+            "<i>⚠ Αυτή η έκθεση δημιουργήθηκε αυτόματα από το Autoanosis AI. "
+            "Δεν αντικαθιστά ιατρική γνωμάτευση. Παρακαλώ συζητήστε με τον γιατρό σας.</i>",
+            ParagraphStyle("Disclaimer", parent=styles["Normal"], fontSize=8.5,
+                          textColor=HexColor("#92400E"), alignment=TA_CENTER,
+                          backColor=HexColor("#FEF3C7"), leftIndent=8, rightIndent=8,
+                          spaceBefore=4, spaceAfter=4, leading=12)
+        )
+        story.append(disclaimer)
+        story.append(Spacer(1, 0.4*cm))
+
+        def add_section(title: str, raw_data: str, ai_analysis: str):
+            """Add a formatted section with data and AI analysis."""
+            # Section header
+            header_row = [[Paragraph(f"  {title}", section_header_style)]]
+            header_tbl = Table(header_row, colWidths=[17*cm])
+            header_tbl.setStyle(TableStyle([
+                ("BACKGROUND", (0, 0), (-1, -1), purple_mid),
+                ("TOPPADDING", (0, 0), (-1, -1), 6),
+                ("BOTTOMPADDING", (0, 0), (-1, -1), 6),
+                ("LEFTPADDING", (0, 0), (-1, -1), 4),
+            ]))
+            story.append(header_tbl)
+
+            # Raw data
+            story.append(Spacer(1, 0.15*cm))
+            story.append(Paragraph("<b>Καταγεγραμμένα Δεδομένα:</b>", label_style))
+            for line in raw_data.split("\n"):
+                if line.strip():
+                    story.append(Paragraph(f"• {line.strip()}", body_style))
+
+            # AI Analysis
+            story.append(Spacer(1, 0.2*cm))
+            story.append(Paragraph("<b>Κλινική Ανάλυση AI:</b>", label_style))
+            # Split analysis into paragraphs
+            for para in ai_analysis.split("\n"):
+                if para.strip():
+                    story.append(Paragraph(para.strip(), analysis_style))
+
+            story.append(Spacer(1, 0.4*cm))
+
+        # Add all sections
+        add_section("ΦΑΡΜΑΚΕΥΤΙΚΗ ΑΓΩΓΗ", sections["medications"], analyses["medications"])
+        add_section("ΑΠΟΤΕΛΕΣΜΑΤΑ ΕΞΕΤΑΣΕΩΝ", sections["tests"], analyses["tests"])
+        add_section("BEST PROTOCOL (Προετοιμασία Ραντεβού)", sections["best"], analyses["best"])
+        add_section("ΗΜΕΡΟΛΟΓΙΟ ΣΥΜΠΤΩΜΑΤΩΝ (Check-ins)", sections["checkins"], analyses["checkins"])
+
+        # --- OVERALL CLINICAL SUMMARY ---
+        summary_header = [[Paragraph("  ΣΥΝΟΛΙΚΗ ΚΛΙΝΙΚΗ ΣΥΝΟΨΗ", section_header_style)]]
+        summary_header_tbl = Table(summary_header, colWidths=[17*cm])
+        summary_header_tbl.setStyle(TableStyle([
+            ("BACKGROUND", (0, 0), (-1, -1), purple_dark),
+            ("TOPPADDING", (0, 0), (-1, -1), 8),
+            ("BOTTOMPADDING", (0, 0), (-1, -1), 8),
+            ("LEFTPADDING", (0, 0), (-1, -1), 4),
+        ]))
+        story.append(summary_header_tbl)
+        story.append(Spacer(1, 0.2*cm))
+        for para in overall_analysis.split("\n"):
+            if para.strip():
+                story.append(Paragraph(para.strip(), analysis_style))
+        story.append(Spacer(1, 0.5*cm))
+
+        # --- FOOTER ---
+        story.append(HRFlowable(width="100%", thickness=0.5, color=purple_mid))
+        story.append(Spacer(1, 0.2*cm))
+        story.append(Paragraph(
+            f"Δημιουργήθηκε από Autoanosis AI Platform  •  {now_str}  •  autoanosis.com  •  "
+            "Εμπιστευτικό ιατρικό έγγραφο — μόνο για χρήση από εξουσιοδοτημένους ιατρούς",
+            footer_style
+        ))
+
+        doc.build(story)
+        buffer.seek(0)
+        return buffer.read()
+
+    except ImportError:
+        # Fallback: plain text report if reportlab not available
+        logger.warning("[REPORT] ReportLab not available, generating text report")
+        return _generate_text_report(patient_name, condition, now_str, sections, analyses, overall_analysis)
+
+
+def _generate_text_report(patient_name, condition, now_str, sections, analyses, overall_analysis) -> bytes:
+    """Fallback text report if PDF generation fails."""
+    lines = [
+        "=" * 60,
+        "ΙΑΤΡΙΚΗ ΕΚΘΕΣΗ — AUTOANOSIS PLATFORM",
+        "=" * 60,
+        f"Ασθενής: {patient_name}",
+        f"Διάγνωση: {condition}",
+        f"Ημερομηνία: {now_str}",
+        "",
+        "ΦΑΡΜΑΚΕΥΤΙΚΗ ΑΓΩΓΗ:",
+        sections["medications"],
+        "",
+        "Ανάλυση:",
+        analyses["medications"],
+        "",
+        "ΑΠΟΤΕΛΕΣΜΑΤΑ ΕΞΕΤΑΣΕΩΝ:",
+        sections["tests"],
+        "",
+        "Ανάλυση:",
+        analyses["tests"],
+        "",
+        "BEST PROTOCOL:",
+        sections["best"],
+        "",
+        "Ανάλυση:",
+        analyses["best"],
+        "",
+        "CHECK-INS:",
+        sections["checkins"],
+        "",
+        "Ανάλυση:",
+        analyses["checkins"],
+        "",
+        "=" * 60,
+        "ΣΥΝΟΛΙΚΗ ΚΛΙΝΙΚΗ ΣΥΝΟΨΗ:",
+        overall_analysis,
+        "=" * 60,
+        "Δημιουργήθηκε από Autoanosis AI Platform",
+    ]
+    return "\n".join(lines).encode("utf-8")
+
+
+# ===========================================================================
+# HEALTH CHECK
+# ===========================================================================
 @app.route('/health', methods=['GET'])
 def health_check():
     return jsonify({
         "status": "healthy",
         "service": "autoanosis-ai-backend",
-        "version": "5.14.0",
+        "version": "6.0.0",
         "timestamp": datetime.utcnow().isoformat() + "Z",
-        "architecture": "wp_push",
+        "architecture": "wp_push_smart_context",
         "features": [
+            "smart_context_router",
+            "intent_detection",
+            "medical_report_generator",
+            "pdf_generation",
+            "pattern_detection",
             "wp_push_context",
             "proxy_hmac_verification",
             "session_memory",
             "rate_limiting",
-            "audit_logging"
         ],
         "config": {
             "proxy_secret_configured": bool(AUTOA_PROXY_SECRET),
+            "max_tokens": 4000,
         }
     }), 200
 
-# ---------------------------------------------------------------------------
-# Chat endpoint (v5.1.0 — WP PUSH)
-# ---------------------------------------------------------------------------
+
+# ===========================================================================
+# CHAT ENDPOINT (v6.0.0 — Smart Context Router)
+# ===========================================================================
 @app.route('/chat', methods=['POST'])
 def chat():
     if len(conversation_storage) > 100:
@@ -716,12 +1182,11 @@ def chat():
 
     # --- Verify proxy HMAC signature ---
     raw_body = request.get_data()
-    ts_str   = request.headers.get("X-Autoa-Proxy-TS", "")
-    nonce    = request.headers.get("X-Autoa-Proxy-Nonce", "")
-    sig      = request.headers.get("X-Autoa-Proxy-Sig", "")
+    ts_str = request.headers.get("X-Autoa-Proxy-TS", "")
+    nonce = request.headers.get("X-Autoa-Proxy-Nonce", "")
+    sig = request.headers.get("X-Autoa-Proxy-Sig", "")
 
     if ts_str or nonce or sig:
-        # Signature headers present — verify them
         ok, reason = verify_proxy_signature(ts_str, nonce, raw_body, sig)
         if not ok:
             logger.warning(f"[PROXY] Signature verification failed: {reason}")
@@ -762,59 +1227,37 @@ def chat():
     if not conversation_id:
         conversation_id = f"conv_{int(time.time())}_{uuid.uuid4().hex[:8]}"
 
-    # --- Extract medical context from wp_context or medical_snapshot (WP PUSH) ---
-    # WordPress helpers.php sends key 'medical_snapshot'; chat-proxy-endpoint.php sends 'wp_context'
+    # --- Smart Context Router ---
     wp_context = data.get("wp_context") or data.get("medical_snapshot")
     snapshot = ""
     snapshot_source = "none"
+    intents = ["full_profile"]
 
     if isinstance(wp_context, dict):
         ctx_key_used = "wp_context" if data.get("wp_context") else "medical_snapshot"
         logger.info(f"[CTX] received {ctx_key_used} keys={list(wp_context.keys())[:10]}")
-        snapshot = extract_context_from_wp_push(wp_context)
+
+        # Detect intent from user message
+        intents = detect_intent(user_message)
+        logger.info(f"[ROUTER] user={user_id} intents={intents} message_preview={user_message[:50]}")
+
+        # Build selective context
+        snapshot = extract_context_from_wp_push(wp_context, user_message)
         if snapshot:
-            snapshot_source = "wp_push"
+            snapshot_source = "wp_push_smart"
             context_bytes = len(snapshot.encode("utf-8"))
             logger.info(
                 f"[CONTEXT] user={user_id} source={snapshot_source} "
-                f"context_bytes={context_bytes} prompt_injected=true"
+                f"intents={intents} context_bytes={context_bytes}"
             )
         else:
-            logger.warning(f"[CONTEXT] context present but empty after extraction for user={user_id} keys={list(wp_context.keys())[:10]}")
+            logger.warning(f"[CONTEXT] context present but empty after extraction for user={user_id}")
     else:
-        logger.warning(f"[CTX] no context received — type={type(wp_context).__name__} user={user_id} body_keys={list(data.keys())}")
+        logger.warning(f"[CTX] no context received — type={type(wp_context).__name__} user={user_id}")
 
     # --- Build system prompt ---
-    if snapshot:
-        system_prompt = f"""Είσαι ο Autoanosis Assistant, ένας εξειδικευμένος βοηθός υγείας στα ελληνικά.
-Παρέχεις:
-- Ακριβείς και επιστημονικά τεκμηριωμένες πληροφορίες υγείας
-- Φιλικές και κατανοητές απαντήσεις
-- Υποστήριξη σε θέματα υγείας, φαρμάκων, συμπτωμάτων
-Σημαντικό:
-- ΔΕΝ αντικαθιστάς ιατρική συμβουλή
-- Συνιστάς πάντα επίσκεψη σε γιατρό για σοβαρά θέματα
-- Απαντάς στα ελληνικά
-ΟΡΙΣΜΟΙ (ΚΡΙΣΙΜΟ):
-- Το B.E.S.T. στο Autoanosis είναι το δικό μας πρωτόκολλο προετοιμασίας ραντεβού (Baseline, Events, Symptoms, Targets). ΔΕΝ είναι εξέταση αίματος.
-- Αν δεν υπάρχει BEST πεδίο στο context, λες "Δεν έχει καταγραφεί ακόμα" — ΔΕΝ επινοείς.
-ΙΑΤΡΙΚΟ ΠΡΟΦΙΛ ΧΡΗΣΤΗ (ΥΠΟΧΡΕΩΤΙΚΗ ΧΡΗΣΗ):
-{snapshot}
-ΚΑΝΟΝΕΣ (ΥΠΟΧΡΕΩΤΙΚΟΙ):
-- ΕΧΕΙΣ πρόσβαση στα παραπάνω ιατρικά δεδομένα και ΠΡΕΠΕΙ να τα χρησιμοποιείς ΠΑΝΤΑ.
-- ΜΗΝ πεις ΠΟΤΕ "δεν έχω πρόσβαση" ή "δεν μπορώ να δω προσωπικά δεδομένα".
-- Αν κάτι λείπει από το προφίλ, πες "δεν εμφανίζεται στο προφίλ υγείας σου".
-- Χρησιμοποίησε το προφίλ ΜΟΝΟ όταν είναι σχετικό με την ερώτηση.
-- ΜΟΝΟ τα δεδομένα που βλέπεις παραπάνω είναι αληθινά - τίποτα άλλο.
-- ΚΑΝΟΝΑΣ ΠΛΗΡΟΤΗΤΑΣ: Όταν ο χρήστης ρωτά για την κατάσταση υγείας του, το προφίλ του, ή ζητά γενική επισκόπηση, ΠΑΝΤΑ παρουσίαζε ΟΛΕΣ τις διαθέσιμες κατηγορίες δεδομένων: Φάρμακα (με ώρες), Αποτελέσματα εξετάσεων (ΟΛΑ), BEST Protocol (ΟΛΑ τα entries), Πρόσφατα συμπτώματα, Ιατρικό ιστορικό. ΜΗΝ παραλείπεις καμία κατηγορία. Αν μια κατηγορία έχει δεδομένα, ΠΡΕΠΕΙ να την παρουσιάσεις.
-ΦΑΡΜΑΚΑ (ΚΡΙΣΙΜΟ):
-- Όταν αναφέρεις φάρμακα, ΠΑΝΤΑ να αναφέρεις και τις ώρες λήψης (time_slots) αν υπάρχουν στο προφίλ
-- Παράδειγμα σωστής απάντησης: "TRANXENE 20 μισό χάπι — κάθε μέρα στις 00:05"
-- ΜΗΝ αναφέρεις μόνο ημερομηνίες δόσεων — αναφέρεις ΠΑΝΤΑ τις ώρες λήψης"""
-        logger.info(f"[PROMPT] Medical context injected for user={user_id} source={snapshot_source}")
-    else:
-        system_prompt = SYSTEM_PROMPT_BASE
-        logger.info(f"[PROMPT] No medical context for user={user_id} — base prompt used")
+    system_prompt = build_system_prompt(snapshot, intents)
+    logger.info(f"[PROMPT] Medical context injected for user={user_id} source={snapshot_source} intents={intents}")
 
     # --- Build messages ---
     history = get_conversation_history(conversation_id)
@@ -830,21 +1273,97 @@ def chat():
             model="gpt-4o-mini",
             messages=messages,
             temperature=0.7,
-            max_tokens=3000,  # v5.16.0: Increased to 3000 to allow full medical data (16+ tests + BEST + medications)
-            timeout=90        # v5.15.4: Explicit 90s timeout (gunicorn timeout is 120s)
+            max_tokens=4000,  # v6.0.0: 4000 for full medical profiles
+            timeout=90
         )
         ai_response = response.choices[0].message.content
 
         save_conversation_message(conversation_id, user_id, "user", user_message)
         save_conversation_message(conversation_id, user_id, "assistant", ai_response)
 
-        logger.info(f"[CHAT] user={user_id} conv={conversation_id}")
+        logger.info(f"[CHAT] user={user_id} conv={conversation_id} intents={intents}")
 
-        return jsonify({"reply": ai_response, "conversation_id": conversation_id})
+        return jsonify({
+            "reply": ai_response,
+            "conversation_id": conversation_id,
+            "intents": intents  # For debugging
+        })
 
     except Exception as e:
         logger.error(f"[OPENAI] error: {e}")
         return jsonify({"error": str(e)}), 500
+
+
+# ===========================================================================
+# MEDICAL REPORT ENDPOINT (v6.0.0 — NEW)
+# ===========================================================================
+@app.route('/generate-report', methods=['POST'])
+def generate_report():
+    """
+    Generate a complete medical report PDF for doctor consultation.
+    Three-pass system: aggregation → AI analysis → PDF assembly.
+    """
+    # --- Verify proxy HMAC signature ---
+    raw_body = request.get_data()
+    ts_str = request.headers.get("X-Autoa-Proxy-TS", "")
+    nonce = request.headers.get("X-Autoa-Proxy-Nonce", "")
+    sig = request.headers.get("X-Autoa-Proxy-Sig", "")
+
+    if ts_str or nonce or sig:
+        ok, reason = verify_proxy_signature(ts_str, nonce, raw_body, sig)
+        if not ok:
+            logger.warning(f"[PROXY] Report signature verification failed: {reason}")
+            return jsonify({"error": f"Invalid proxy signature: {reason}"}), 403
+
+    data = request.json
+    if not data:
+        return jsonify({"error": "No JSON body"}), 400
+
+    # --- Authenticate user ---
+    user_id = None
+    identity_token = data.get("identity_token")
+    if identity_token:
+        is_valid, payload, error = verify_identity_token(identity_token)
+        if is_valid and payload:
+            user_id = payload.get("uid")
+        else:
+            return jsonify({"error": "Invalid identity token"}), 401
+    else:
+        return jsonify({"error": "Identity token required"}), 401
+
+    # --- Rate limit (stricter for reports — expensive operation) ---
+    if not check_rate_limit(f"report_{user_id}"):
+        return jsonify({"error": "Rate limit exceeded for report generation."}), 429
+
+    # --- Get medical snapshot ---
+    wp_context = data.get("wp_context") or data.get("medical_snapshot")
+    if not isinstance(wp_context, dict):
+        return jsonify({"error": "Medical snapshot required for report generation"}), 400
+
+    logger.info(f"[REPORT] Starting report generation for user={user_id}")
+
+    try:
+        # Generate PDF (three-pass system)
+        pdf_bytes = generate_medical_report_pdf(wp_context, user_id)
+
+        # Determine content type
+        patient_name = wp_context.get("user_name") or f"user_{user_id}"
+        safe_name = re.sub(r'[^a-zA-Z0-9_-]', '_', patient_name)
+        date_str = datetime.now().strftime("%Y%m%d")
+        filename = f"autoanosis_report_{safe_name}_{date_str}.pdf"
+
+        logger.info(f"[REPORT] Report generated successfully for user={user_id} size={len(pdf_bytes)} bytes")
+
+        return send_file(
+            io.BytesIO(pdf_bytes),
+            mimetype="application/pdf",
+            as_attachment=True,
+            download_name=filename
+        )
+
+    except Exception as e:
+        logger.error(f"[REPORT] Error generating report for user={user_id}: {e}")
+        return jsonify({"error": f"Report generation failed: {str(e)[:200]}"}), 500
 
 
 if __name__ == "__main__":
