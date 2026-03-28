@@ -1,0 +1,13 @@
+from fastapi import FastAPI
+from exams_module.db.base import Base
+from exams_module.db.database import engine
+from exams_module.api.exams import router as exams_router
+
+Base.metadata.create_all(bind=engine)
+
+app = FastAPI(title="Autoanosis Exams Master Package")
+app.include_router(exams_router)
+
+@app.get("/health")
+def health():
+    return {"ok": True}

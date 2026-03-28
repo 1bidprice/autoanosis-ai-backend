@@ -1035,21 +1035,32 @@ function autoa_rest_chat_proxy( WP_REST_Request $req ) {
             }
         }
         
-        // 7. Get test results (full history, LIMIT 50)
-        // Column names: result_value, reference_range (NOT test_value/ref_range)
-        $test_results_table = $wpdb->prefix . 'autoanosis_test_results';
-        if ($wpdb->get_var("SHOW TABLES LIKE '$test_results_table'") === $test_results_table) {
-            $test_results = $wpdb->get_results($wpdb->prepare(
-                "SELECT id, user_id, test_date, test_name, result_value, unit, reference_range, test_type, doctor_name, notes, created_at
-                FROM $test_results_table
-                WHERE user_id = %d
-                ORDER BY test_date DESC, created_at DESC
-                LIMIT 50",
-                $user_id
-            ), ARRAY_A);
-            
-            if (!empty($test_results)) {
-                $snapshot['test_results'] = $test_results;
+        // 7. Get structured exam results from Exams Normalizer subsystem
+        // RULE: Doctor Dashboard reads ONLY structured exam data.
+        // Raw blobs / OCR text / failed extracts are NEVER used as source of truth.
+        $structured_exams = autoanosis_exams_fetch_structured_snapshot( $user_id );
+        if ( !is_wp_error($structured_exams) && !empty($structured_exams['structured_exam_results']) ) {
+            $snapshot['structured_exam_results'] = $structured_exams['structured_exam_results'];
+            $snapshot['exam_report_count']       = $structured_exams['report_count'] ?? 0;
+            // NOTE: $snapshot['test_results'] is intentionally NOT set here.
+            // The backend's build_selective_context() will prefer structured_exam_results.
+        } else {
+            // Fallback: raw test_results from WP table (only if Exams API is unavailable)
+            // This fallback will be removed once all exams are migrated to the normalizer.
+            $test_results_table = $wpdb->prefix . 'autoanosis_test_results';
+            if ($wpdb->get_var("SHOW TABLES LIKE '$test_results_table'") === $test_results_table) {
+                $test_results = $wpdb->get_results($wpdb->prepare(
+                    "SELECT id, user_id, test_date, test_name, result_value, unit, reference_range, test_type, doctor_name, notes, created_at
+                    FROM $test_results_table
+                    WHERE user_id = %d
+                    ORDER BY test_date DESC, created_at DESC
+                    LIMIT 50",
+                    $user_id
+                ), ARRAY_A);
+                if (!empty($test_results)) {
+                    $snapshot['test_results'] = $test_results;
+                    error_log('[AUTOANOSIS EXAMS] FALLBACK: using raw test_results for user ' . $user_id . ' — Exams API unavailable');
+                }
             }
         }
         
@@ -1415,19 +1426,32 @@ function autoa_rest_generate_report( WP_REST_Request $req ) {
         if (!empty($symptoms)) { $snapshot['recent_symptoms'] = $symptoms; }
     }
 
-    // Test results (full history, LIMIT 50)
-    $test_results_table = $wpdb->prefix . 'autoanosis_test_results';
-    if ($wpdb->get_var("SHOW TABLES LIKE '$test_results_table'") === $test_results_table) {
-        $tests = $wpdb->get_results($wpdb->prepare(
-            "SELECT id, user_id, test_date, test_name, result_value, unit,
-                    reference_range, test_type, doctor_name, notes, created_at
-             FROM $test_results_table
-             WHERE user_id = %d
-             ORDER BY test_date DESC, created_at DESC
-             LIMIT 50",
-            $user_id
-        ), ARRAY_A);
-        if (!empty($tests)) { $snapshot['test_results'] = $tests; }
+    // Structured exam results from Exams Normalizer subsystem (Doctor Dashboard source of truth)
+    // RULE: Doctor Dashboard reads ONLY structured, normalised exam data.
+    // Raw blobs / OCR text / failed extracts are NEVER exposed here.
+    $structured_exams = autoanosis_exams_fetch_structured_snapshot( $user_id );
+    if ( !is_wp_error($structured_exams) && !empty($structured_exams['structured_exam_results']) ) {
+        $snapshot['structured_exam_results'] = $structured_exams['structured_exam_results'];
+        $snapshot['exam_report_count']       = $structured_exams['report_count'] ?? 0;
+        // test_results is intentionally NOT set — backend prefers structured_exam_results
+    } else {
+        // Fallback to raw WP table only when Exams API is unavailable
+        $test_results_table = $wpdb->prefix . 'autoanosis_test_results';
+        if ($wpdb->get_var("SHOW TABLES LIKE '$test_results_table'") === $test_results_table) {
+            $tests = $wpdb->get_results($wpdb->prepare(
+                "SELECT id, user_id, test_date, test_name, result_value, unit,
+                        reference_range, test_type, doctor_name, notes, created_at
+                 FROM $test_results_table
+                 WHERE user_id = %d
+                 ORDER BY test_date DESC, created_at DESC
+                 LIMIT 50",
+                $user_id
+            ), ARRAY_A);
+            if (!empty($tests)) {
+                $snapshot['test_results'] = $tests;
+                error_log('[AUTOANOSIS EXAMS] FALLBACK (doctor-dashboard): raw test_results for user ' . $user_id);
+            }
+        }
     }
 
     // Health notes

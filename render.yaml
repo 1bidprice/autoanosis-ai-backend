@@ -9,3 +9,15 @@ services:
         sync: false
       - key: PYTHON_VERSION
         value: 3.11.0
+      # ---------------------------------------------------------------------------
+      # Exams Ingestion + Normalizer subsystem
+      # DATABASE_URL: PostgreSQL connection string (Neon/Supabase)
+      # Format: postgresql://user:pass@host/dbname?sslmode=require
+      # Set this in the Render dashboard under Environment → Add Secret.
+      # ---------------------------------------------------------------------------
+      - key: DATABASE_URL
+        sync: false
+      # AUTOA_AI_PROXY_SECRET: shared HMAC secret for WP→Render server-to-server calls
+      # Must match the value set in the WordPress plugin (AUTOA_AI_PROXY_SECRET constant).
+      - key: AUTOA_AI_PROXY_SECRET
+        sync: false

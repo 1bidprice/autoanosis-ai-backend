@@ -35,6 +35,8 @@ from flask_cors import CORS
 from openai import OpenAI
 from identity import verify_identity_token
 from ocr_endpoint import ocr_bp
+from exams_module.api.exams_flask import exams_bp
+from exams_module.db.database import init_db
 
 # ---------------------------------------------------------------------------
 # Logging
@@ -50,12 +52,20 @@ logger = logging.getLogger(__name__)
 # ---------------------------------------------------------------------------
 app = Flask(__name__)
 app.register_blueprint(ocr_bp)
+app.register_blueprint(exams_bp)
+
+# Initialise exams tables on startup (safe no-op if already exist)
+try:
+    init_db()
+    logger.info("[EXAMS] Database tables initialised")
+except Exception as _exams_init_err:
+    logger.warning(f"[EXAMS] init_db warning (non-fatal): {_exams_init_err}")
 
 CORS(app, resources={
     r"/*": {
         "origins": ["https://autoanosis.com", "https://www.autoanosis.com"],
         "methods": ["GET", "POST", "OPTIONS"],
-        "allow_headers": ["Content-Type", "X-User-ID", "X-Autoa-Proxy-TS", "X-Autoa-Proxy-Nonce", "X-Autoa-Proxy-Sig"],
+        "allow_headers": ["Content-Type", "X-User-ID", "X-Autoa-Proxy-TS", "X-Autoa-Proxy-Nonce", "X-Autoa-Proxy-Sig", "X-Identity-Token"],
         "supports_credentials": True
     }
 })
@@ -334,31 +344,42 @@ def build_selective_context(snap: dict, intents: list[str]) -> str:
             if sched_lines:
                 parts.append("Πρόγραμμα Δόσεων (επόμενες):\n" + "\n".join(sched_lines))
 
-    # --- TEST RESULTS ---
+    # --- TEST RESULTS (Structured Exams — from aa_exam_reports) ---
+    # IMPORTANT: Only structured, normalised exam data is used here.
+    # Raw blobs, OCR text and failed extracts are NEVER exposed as source of truth.
     if load_all or "test_results" in intents:
-        test_results = snap.get("test_results") or []
-        if isinstance(test_results, list) and test_results:
+        # Primary source: structured_exam_results from the Exams Normalizer subsystem
+        structured_results = snap.get("structured_exam_results") or []
+        # Legacy fallback: raw test_results from WP snapshot (accepted only if no structured data)
+        raw_results = snap.get("test_results") or []
+
+        # Prefer structured data; use raw only if structured is completely absent
+        results_source = structured_results if structured_results else raw_results
+        source_label = "Εξετάσεις (Δομημένα)" if structured_results else "Εξετάσεις (WP Snapshot)"
+
+        if isinstance(results_source, list) and results_source:
             res_lines = []
-            for r in test_results:
+            for r in results_source:
                 if isinstance(r, dict):
                     date = r.get("test_date") or r.get("created_at") or ""
-                    name_t = r.get("test_name") or r.get("name") or ""
-                    val = r.get("result_value") or r.get("value") or ""
+                    name_t = r.get("test_name") or r.get("display_name") or r.get("name") or ""
+                    val = r.get("result_value") or r.get("value_numeric") or r.get("value") or ""
                     unit = r.get("unit") or ""
                     ref = r.get("reference_range") or ""
-                    status = r.get("status") or ""
+                    status = r.get("status") or r.get("abnormal_flag") or ""
                     note = r.get("notes") or r.get("note") or ""
+                    norm_status = r.get("normalization_status") or ""
                     line = f"{date}: {name_t} = {val} {unit}".strip().rstrip(":")
                     if ref:
                         line += f" (Φυσιολογικό: {ref})"
-                    if status:
+                    if status and status not in ("unknown", ""):
                         line += f" [{status}]"
                     if note:
                         line += f" — {note[:80]}"
                     if line.strip(":"):
                         res_lines.append(line)
             if res_lines:
-                parts.append(f"Αποτελέσματα Εξετάσεων ({len(res_lines)} εγγραφές):\n" + "\n".join(res_lines))
+                parts.append(f"{source_label} ({len(res_lines)} εγγραφές):\n" + "\n".join(res_lines))
 
     # --- BEST PROTOCOL ---
     if load_all or "best_protocol" in intents:
@@ -757,22 +778,28 @@ def generate_medical_report_pdf(snap: dict, user_id: int) -> bytes:
                 med_lines.append(line)
     sections["medications"] = "\n".join(med_lines) if med_lines else "Δεν καταγράφηκαν φάρμακα."
 
-    # Test Results
-    tests = snap.get("test_results") or []
+    # Test Results — prefer structured exam data from Normalizer subsystem
+    # structured_exam_results is populated by /exams/patients/<id>/snapshot
+    structured_tests = snap.get("structured_exam_results") or []
+    raw_tests = snap.get("test_results") or []
+    tests = structured_tests if structured_tests else raw_tests
     test_lines = []
     for r in tests:
         if isinstance(r, dict):
             date = r.get("test_date") or ""
-            name_t = r.get("test_name") or ""
-            val = r.get("result_value") or ""
+            name_t = r.get("test_name") or r.get("display_name") or r.get("test_name") or ""
+            val = r.get("result_value") or r.get("value_numeric") or r.get("value") or ""
             unit = r.get("unit") or ""
             ref = r.get("reference_range") or ""
-            status = r.get("status") or ""
+            status = r.get("status") or r.get("abnormal_flag") or ""
             line = f"{date}: {name_t} = {val} {unit}"
             if ref: line += f" (Φυσ.: {ref})"
-            if status: line += f" [{status}]"
+            if status and status not in ("unknown", ""): line += f" [{status}]"
             test_lines.append(line)
+    data_source_note = " (Δομημένα/Επαληθευμένα)" if structured_tests else " (WP Snapshot)"
     sections["tests"] = "\n".join(test_lines) if test_lines else "Δεν καταγράφηκαν εξετάσεις."
+    if test_lines:
+        sections["tests"] = f"[{len(test_lines)} εγγραφές{data_source_note}]\n" + sections["tests"]
 
     # BEST Protocol
     best = snap.get("best_protocol") or {}
@@ -1164,6 +1191,9 @@ def health_check():
             "proxy_hmac_verification",
             "session_memory",
             "rate_limiting",
+            "exams_ingestion_normalizer",
+            "structured_exam_reports",
+            "exam_review_queue",
         ],
         "config": {
             "proxy_secret_configured": bool(AUTOA_PROXY_SECRET),

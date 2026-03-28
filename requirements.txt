@@ -1,6 +1,27 @@
+# Core Flask stack
 Flask==3.0.0
 flask-cors==4.0.0
-openai==1.58.1
 gunicorn==21.2.0
+
+# AI / OpenAI
+openai==1.58.1
+
+# HTTP
 requests==2.31.0
+
+# PDF processing
 pymupdf==1.23.26
+reportlab>=4.0.0
+
+# ---------------------------------------------------------------------------
+# Exams Ingestion + Normalizer subsystem
+# ---------------------------------------------------------------------------
+# ORM + DB drivers
+SQLAlchemy>=2.0.0,<3.0.0
+psycopg2-binary>=2.9.9       # PostgreSQL driver (Neon / Supabase)
+
+# Data validation (used by exam_schemas.py)
+pydantic>=2.0.0,<3.0.0
+
+# NLP / text processing for normalizer
+spacy>=3.7.0
