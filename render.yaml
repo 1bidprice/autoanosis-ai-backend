@@ -21,3 +21,9 @@ services:
       # Must match the value set in the WordPress plugin (AUTOA_AI_PROXY_SECRET constant).
       - key: AUTOA_AI_PROXY_SECRET
         sync: false
+      # AUTOANOSIS_IDENTITY_SECRET: shared HMAC secret for WordPress identity token signing.
+      # Must match the value set in WordPress wp-config.php (AUTOANOSIS_IDENTITY_SECRET constant).
+      # CRITICAL: Without this, all /exams/ingest-from-ocr calls return HTTP 401 and no exam data is ever written.
+      # Generate with: python3 -c "import secrets; print(secrets.token_hex(32))"
+      - key: AUTOANOSIS_IDENTITY_SECRET
+        sync: false
