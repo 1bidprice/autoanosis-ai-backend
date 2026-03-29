@@ -56,11 +56,11 @@ def reprocess_all_documents():
     }
 
     try:
-        # Get all documents that have raw_text
+        # Get all documents that have ocr_text
         documents = (
             db.query(ExamDocument)
-            .filter(ExamDocument.raw_text.isnot(None))
-            .filter(ExamDocument.raw_text != "")
+            .filter(ExamDocument.ocr_text.isnot(None))
+            .filter(ExamDocument.ocr_text != "")
             .order_by(ExamDocument.created_at.desc())
             .all()
         )
