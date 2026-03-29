@@ -61,7 +61,7 @@ def reprocess_all_documents():
             db.query(ExamDocument)
             .filter(ExamDocument.ocr_text.isnot(None))
             .filter(ExamDocument.ocr_text != "")
-            .order_by(ExamDocument.created_at.desc())
+            .order_by(ExamDocument.uploaded_at.desc())
             .all()
         )
 
