@@ -37,6 +37,7 @@ from identity import verify_identity_token
 from ocr_endpoint import ocr_bp
 from exams_module.api.exams_flask import exams_bp
 from exams_module.api.reprocess import reprocess_bp
+from exams_module.api.audit_temp import audit_bp
 from exams_module.db.database import init_db
 
 # ---------------------------------------------------------------------------
@@ -55,6 +56,7 @@ app = Flask(__name__)
 app.register_blueprint(ocr_bp)
 app.register_blueprint(exams_bp)
 app.register_blueprint(reprocess_bp)
+app.register_blueprint(audit_bp)
 
 # Initialise exams tables on startup (safe no-op if already exist)
 try:
