@@ -273,10 +273,10 @@ def get_patient_reports(patient_id):
                 ExamReport.patient_id == patient_id,
                 ExamReport.status == "active",
                 ExamReport.normalization_status.in_(
-                    ["auto_verified", "manually_corrected", "published"]
+                    ["auto_verified", "manually_corrected", "published", "needs_review"]
                 ),
             )
-            .order_by(ExamReport.created_at.desc())
+            .order_by(ExamReport.performed_at.desc())
             .all()
         )
 
@@ -383,10 +383,10 @@ def get_patient_exam_snapshot(patient_id):
                 ExamReport.patient_id == patient_id,
                 ExamReport.status == "active",
                 ExamReport.normalization_status.in_(
-                    ["auto_verified", "manually_corrected", "published"]
+                    ["auto_verified", "manually_corrected", "published", "needs_review"]
                 ),
             )
-            .order_by(ExamReport.created_at.desc())
+            .order_by(ExamReport.performed_at.desc())
             .limit(50)
             .all()
         )
