@@ -377,7 +377,15 @@ def build_selective_context(snap: dict, intents: list[str]) -> str:
                     if ref:
                         line += f" (Φυσιολογικό: {ref})"
                     if status and status not in ("unknown", ""):
-                        line += f" [{status}]"
+                        # Translate English DB flags to Greek for AI readability
+                        _status_gr = {
+                            "normal":   "φυσιολογικό",
+                            "high":     "υψηλό",
+                            "low":      "χαμηλό",
+                            "critical": "κρίσιμο",
+                            "abnormal": "εκτός ορίων",
+                        }.get(status.lower(), status)
+                        line += f" [{_status_gr}]"
                     if note:
                         line += f" — {note[:80]}"
                     if line.strip(":"):
@@ -702,7 +710,7 @@ def build_system_prompt(snapshot: str, intents: list[str]) -> str:
         "best_protocol": "Εστίασε στο BEST Protocol. Ανέφερε ΟΛΑ τα BEST entries με ημερομηνίες και λεπτομέρειες.",
         "checkins": "Εστίασε στο ημερολόγιο συμπτωμάτων. Ανέφερε τάσεις και μεταβολές.",
         "symptoms": "Εστίασε στα συμπτώματα. Ανέφερε πότε εμφανίστηκαν, ένταση και τάσεις.",
-        "full_profile": "Παρουσίασε ΟΛΕΣ τις κατηγορίες δεδομένων: φάρμακα, εξετάσεις, BEST, check-ins, συμπτώματα. ΜΗΝ παραλείπεις καμία κατηγορία.",
+        "full_profile": "Δώσε μια σύντομη, ανθρώπινη σύνοψη της υγείας με βάση μόνο τα δεδομένα που υπάρχουν στο context. Πρώτα ανέφερε τα φάρμακα και τις εξετάσεις με τις αξιοσημείωτες τιμές. Αν υπάρχει BEST ή check-ins, συμπερίλαβέ τα συνοπτικά. ΜΗΝ αναφέρεις κατηγορίες που δεν υπάρχουν στο context.",
         "pattern_detection": "Ανάλυσε τάσεις και μοτίβα στα δεδομένα. Εντόπισε συσχετίσεις μεταξύ συμπτωμάτων, εξετάσεων και γεγονότων.",
         "report": "Ο χρήστης ζητά έκθεση για γιατρό. Πες του να χρησιμοποιήσει το κουμπί 'Δημιουργία Ιατρικής Έκθεσης'.",
     }
@@ -716,7 +724,7 @@ def build_system_prompt(snapshot: str, intents: list[str]) -> str:
 
 ΟΡΙΣΜΟΙ (ΚΡΙΣΙΜΟ):
 - Το B.E.S.T. στο Autoanosis είναι πρωτόκολλο προετοιμασίας ραντεβού (Baseline, Events, Symptoms, Targets). ΔΕΝ είναι εξέταση αίματος.
-- Αν δεν υπάρχει κάποιο πεδίο στο context, λες "Δεν έχει καταγραφεί ακόμα" — ΔΕΝ επινοείς.
+- Αναφέρεσαι ΜΟΝΟ σε κατηγορίες που υπάρχουν στο context. ΜΗΝ αναφέρεις BEST, check-ins ή συμπτώματα αν δεν υπάρχουν στο context — απλώς παράλειψέ τα.
 
 ΙΑΤΡΙΚΟ ΠΡΟΦΙΛ ΧΡΗΣΤΗ (ΥΠΟΧΡΕΩΤΙΚΗ ΧΡΗΣΗ):
 {snapshot}
@@ -798,7 +806,9 @@ def generate_medical_report_pdf(snap: dict, user_id: int) -> bytes:
             status = r.get("status") or r.get("abnormal_flag") or ""
             line = f"{date}: {name_t} = {val} {unit}"
             if ref: line += f" (Φυσ.: {ref})"
-            if status and status not in ("unknown", ""): line += f" [{status}]"
+            if status and status not in ("unknown", ""):
+                _st_gr = {"normal": "φυσιολογικό", "high": "υψηλό", "low": "χαμηλό", "critical": "κρίσιμο", "abnormal": "εκτός ορίων"}.get(status.lower(), status)
+                line += f" [{_st_gr}]"
             test_lines.append(line)
     data_source_note = " (Δομημένα/Επαληθευμένα)" if structured_tests else " (WP Snapshot)"
     sections["tests"] = "\n".join(test_lines) if test_lines else "Δεν καταγράφηκαν εξετάσεις."
