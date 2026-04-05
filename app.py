@@ -422,7 +422,7 @@ def extract_context_from_wp_push(wp_context: dict, message: str = "") -> str:
     # Shape C: helpers.php autoa_rest_chat_proxy snapshot
     if any(k in wp_context for k in ("health_info", "autoimmune_type", "user_name", "recent_checkins", "medications", "best_protocol", "test_results")):
         intent = detect_intent(message) if message else "summary"
-        logger.info(f"[CTX] Smart Context Router — intents={intents}")
+        logger.info(f"[CTX] Smart Context Router — intent={intent}")
         return build_selective_context(wp_context, intent)
 
     # Fallback: treat as aggregator snapshot
@@ -1126,7 +1126,7 @@ def chat():
 
         # Detect intent from user message
         intent = detect_intent(user_message)
-        logger.info(f"[ROUTER] user={user_id} intents={intents} message_preview={user_message[:50]}")
+        logger.info(f"[ROUTER] user={user_id} intent={intent} message_preview={user_message[:50]}")
 
         # Build selective context
         snapshot = extract_context_from_wp_push(wp_context, user_message)
@@ -1135,7 +1135,7 @@ def chat():
             context_bytes = len(snapshot.encode("utf-8"))
             logger.info(
                 f"[CONTEXT] user={user_id} source={snapshot_source} "
-                f"intents={intents} context_bytes={context_bytes}"
+                f"intent={intent} context_bytes={context_bytes}"
             )
         else:
             logger.warning(f"[CONTEXT] context present but empty after extraction for user={user_id}")
@@ -1144,7 +1144,7 @@ def chat():
 
     # --- Build system prompt ---
     system_prompt = build_system_prompt(snapshot, intent)
-    logger.info(f"[PROMPT] Medical context injected for user={user_id} source={snapshot_source} intents={intents}")
+    logger.info(f"[PROMPT] Medical context injected for user={user_id} source={snapshot_source} intent={intent}")
 
     # --- Build messages ---
     history = get_conversation_history(conversation_id)
@@ -1168,7 +1168,7 @@ def chat():
         save_conversation_message(conversation_id, user_id, "user", user_message)
         save_conversation_message(conversation_id, user_id, "assistant", ai_response)
 
-        logger.info(f"[CHAT] user={user_id} conv={conversation_id} intents={intents}")
+        logger.info(f"[CHAT] user={user_id} conv={conversation_id} intent={intent}")
 
         return jsonify({
             "reply": ai_response,
