@@ -169,66 +169,34 @@ def verify_proxy_signature(ts_str: str, nonce: str, raw_body: bytes, sig: str) -
 
 # Intent categories with Greek keyword patterns
 INTENT_PATTERNS = {
-    "medications": [
-        r"φάρμακ", r"φαρμακ", r"χάπι", r"χαπι", r"δόσ", r"δοσ",
-        r"παίρνω", r"παιρνω", r"θεραπεί", r"θεραπει", r"αγωγ",
-        r"tranxene", r"serolux", r"trebon", r"probiotic",
-    ],
-    "test_results": [
-        r"εξέτασ", r"εξετασ", r"αποτέλεσμ", r"αποτελεσμ",
-        r"αίμα", r"αιμα", r"εργαστήρ", r"εργαστηρ",
-        r"φερριτίν", r"φερριτιν", r"ferritin",
-        r"βιταμίν", r"βιταμιν", r"vitamin",
-        r"b12", r"tkε", r"tke", r"c3", r"c4",
-        r"τιμ", r"αποτέλεσμ", r"αποτελεσμ",
-        r"εξετάσεις", r"εξετασεις",
-        r"εξετ", r"εξέτ",
-    ],
-    "best_protocol": [
-        r"best", r"b\.e\.s\.t", r"ραντεβού", r"ραντεβου",
-        r"γιατρ", r"ιατρ", r"νεφρολόγ", r"νεφρολογ",
-        r"νευρολόγ", r"νευρολογ", r"ρευματολόγ", r"ρευματολογ",
-        r"επίσκεψ", r"επισκεψ", r"στόχ", r"στοχ",
-        r"προετοιμασί", r"προετοιμασι",
-    ],
-    "checkins": [
-        r"check.in", r"ημερολόγ", r"ημερολογ",
-        r"πόνος", r"πονος", r"κόπωσ", r"κοπωσ",
-        r"ενέργεια", r"ενεργεια", r"διάθεσ", r"διαθεσ",
-        r"σήμερα", r"σημερα", r"χθες", r"εβδομάδ", r"εβδομαδ",
-        r"τελευταί", r"τελευται",
-    ],
-    "symptoms": [
-        r"σύμπτωμ", r"συμπτωμ", r"πόνος", r"πονος",
-        r"κόπωσ", r"κοπωσ", r"φλεγμον", r"κρίσ", r"κρισ",
-        r"επιδείνωσ", r"επιδεινωσ", r"βελτίωσ", r"βελτιωσ",
-    ],
-    "full_profile": [
-        r"γενική", r"γενικη", r"γενικά", r"γενικα",  # γενικ not γενικ (too broad)
-        r"όλα τα", r"όλα μου", r"ολα τα", r"ολα μου",  # όλα not όλ (too broad)
-        r"προφίλ", r"προφιλ",
-        r"κατάστασή μου", r"κατασταση μου",
-        r"υγεία μου", r"υγεια μου",
-        r"συνολική", r"συνολικα",
-        r"πλήρης", r"πληρης", r"πλήρες", r"πληρες",
-        r"επισκόπηση", r"επισκοπηση",
+    "summary": [
+        r"σύνοψη", r"συνοψη", r"περίληψη", r"περιληψη",
+        r"γενική", r"γενικη", r"προφίλ", r"προφιλ",
+        r"κατάστασή", r"κατασταση", r"υγεία", r"υγεια",
         r"πώς είμαι", r"πως ειμαι", r"τι έχω", r"τι εχω",
-        r"τι δεδομένα", r"τι δεδομενα",
     ],
-    "report": [
-        r"έκθεσ", r"εκθεσ", r"αναφορ", r"report",
-        r"γιατρ.*έγγραφ", r"έγγραφ.*γιατρ",
-        r"εκτύπωσ", r"εκτυπωσ", r"pdf",
-        r"ιατρικ.*έγγραφ", r"ιατρικ.*αναφορ",
-        r"δώσε.*γιατρ", r"δωσε.*γιατρ",
+    "doctor_report": [
+        r"όλο το ιστορικό", r"ολο το ιστορικο",
+        r"πλήρη αναφορά", r"πληρη αναφορα",
+        r"για τον γιατρό", r"για τον γιατρο",
+        r"για τον ιατρό", r"για τον ιατρο",
+        r"όλο το προφίλ", r"ολο το προφιλ",
+        r"πλήρες ιστορικό", r"πληρες ιστορικο",
+        r"πλήρες προφίλ", r"πληρες προφιλ",
+        r"report", r"έκθεσ", r"εκθεσ",
     ],
     "pattern_detection": [
         r"μοτίβ", r"μοτιβ", r"pattern",
         r"trend", r"εξέλιξ", r"εξελιξ",
-        r"τάση", r"ταση",  # τάση not τάσ (too broad)
+        r"τάση", r"ταση", r"τάσεις", r"τασεις",
         r"βελτιώνεται", r"βελτιωνεται",
         r"επιδεινώνεται", r"επιδεινωνεται",
-        r"συσχέτισ", r"συσχετισ",
+    ],
+    "education": [
+        r"τι είναι", r"τι ειναι",
+        r"εξήγησέ", r"εξηγησε", r"εξήγηση", r"εξηγηση",
+        r"τι σημαίνει", r"τι σημαινει",
+        r"πληροφορίες για", r"πληροφοριες για",
     ],
 }
 
@@ -242,354 +210,183 @@ def _normalize_greek(text: str) -> str:
     )
 
 
-def detect_intent(message: str) -> list[str]:
-    """Detect query intent from Greek message. Returns list of relevant intents."""
-    # Normalize: lowercase + strip accents so ω matches ώ, ε matches έ, etc.
+def detect_intent(message: str) -> str:
+    """Detect primary intent deterministically. Returns a single intent string."""
     msg_norm = _normalize_greek(message)
-    detected = []
-    for intent, patterns in INTENT_PATTERNS.items():
-        for pattern in patterns:
-            # Also normalize the pattern itself
-            norm_pattern = _normalize_greek(pattern)
-            if re.search(norm_pattern, msg_norm):
-                detected.append(intent)
-                break
-    # Default to full_profile if no specific intent detected
-    if not detected:
-        return ["full_profile"]
-    # If report intent detected, return immediately
-    if "report" in detected:
-        return ["report"]
-    # full_profile overrides specific intents (show everything)
-    if "full_profile" in detected:
-        return ["full_profile"]
-    # checkins takes priority over symptoms (symptoms overlap with checkins)
-    if "checkins" in detected and "symptoms" in detected:
-        detected.remove("symptoms")
-    # Remove pattern_detection from primary intents (it's supplementary)
-    primary = [i for i in detected if i != "pattern_detection"]
-    if not primary:
-        return ["full_profile"]
-    # If multiple different primary intents → show full profile
-    if len(primary) > 1:
-        return ["full_profile"]
-    # Single primary intent — return it (optionally with pattern_detection)
-    if "pattern_detection" in detected:
-        return primary + ["pattern_detection"]
-    return primary
+    
+    # Priority 1: doctor_report (explicit request for full history)
+    for p in INTENT_PATTERNS["doctor_report"]:
+        if re.search(_normalize_greek(p), msg_norm):
+            return "doctor_report"
+            
+    # Priority 2: pattern_detection
+    for p in INTENT_PATTERNS["pattern_detection"]:
+        if re.search(_normalize_greek(p), msg_norm):
+            return "pattern_detection"
+            
+    # Priority 3: education
+    for p in INTENT_PATTERNS["education"]:
+        if re.search(_normalize_greek(p), msg_norm):
+            return "education"
+            
+    # Default to summary
+    return "summary"
 
 
-def build_selective_context(snap: dict, intents: list[str]) -> str:
+def build_selective_context(snap: dict, intent: str) -> str:
     """
-    Build medical context string based on detected intents.
-    Only loads data relevant to the query — prevents context overflow.
-    For full_profile intent: loads everything.
+    Build canonical context string based on deterministic intent.
+    Context Priority Order: profile, medications, structured_exam_results, best_history, recent_checkins, health_notes, health_tracking, medication_schedule, trend_summary
     """
     if not snap or not isinstance(snap, dict):
         return ""
 
     parts = []
 
-    # Always include basic profile (minimal overhead ~100 tokens)
+    # 1. Profile
     name = snap.get("user_name")
-    if name:
-        parts.append(f"Χρήστης: {name}")
     cond = snap.get("autoimmune_type")
-    if cond:
-        parts.append(f"Αυτοάνοση πάθηση: {cond}")
     diet = snap.get("diet_pref")
-    if diet:
-        parts.append(f"Διατροφή: {diet}")
     health_info = snap.get("health_info")
+    
+    prof_parts = []
+    if name: prof_parts.append(f"Χρήστης: {name}")
+    if cond: prof_parts.append(f"Πάθηση: {cond}")
+    if diet: prof_parts.append(f"Διατροφή: {diet}")
     if health_info and isinstance(health_info, str) and health_info.strip():
-        parts.append(f"Ιστορικό φαρμάκων / Υγεία: {health_info.strip()}")
+        prof_parts.append(f"Ιστορικό/Υγεία: {health_info.strip()}")
+    
+    if prof_parts:
+        parts.append("1. ΠΡΟΦΙΛ:\n" + " | ".join(prof_parts))
 
-    load_all = ("full_profile" in intents)
+    # 2. Medications
+    meds = snap.get("medications") or []
+    if isinstance(meds, list) and meds:
+        med_lines = []
+        for m in meds:
+            if isinstance(m, dict):
+                n = m.get("medication_name") or m.get("name") or m.get("drug_name") or ""
+                dose = m.get("dosage") or m.get("dose") or ""
+                freq = m.get("frequency") or ""
+                slots = m.get("time_slots") or []
+                if n:
+                    line = f"{n} {dose} {freq}".strip()
+                    if isinstance(slots, list) and slots: line += f" (Ώρες: {', '.join(slots)})"
+                    elif isinstance(slots, str) and slots: line += f" (Ώρες: {slots})"
+                    med_lines.append(line)
+        if med_lines:
+            parts.append("2. ΦΑΡΜΑΚΑ:\n" + "\n".join(f"• {l}" for l in med_lines))
 
-    # --- MEDICATIONS ---
-    if load_all or "medications" in intents:
-        meds = snap.get("medications") or []
-        if isinstance(meds, list) and meds:
-            med_lines = []
-            for m in meds:
-                if isinstance(m, dict):
-                    n = m.get("medication_name") or m.get("name") or m.get("drug_name") or ""
-                    dose = m.get("dosage") or m.get("dose") or ""
-                    freq = m.get("frequency") or ""
-                    time_slots = m.get("time_slots") or []
-                    notes = m.get("notes") or ""
-                    if n:
-                        line = f"{n}"
-                        if dose:
-                            line += f" {dose}"
-                        if freq:
-                            line += f" ({freq})"
-                        if isinstance(time_slots, list) and time_slots:
-                            line += f" — ώρες λήψης: {', '.join(time_slots)}"
-                        elif isinstance(time_slots, str) and time_slots:
-                            line += f" — ώρες λήψης: {time_slots}"
-                        if notes:
-                            line += f" [{notes[:60]}]"
-                        med_lines.append(line)
-            if med_lines:
-                parts.append("Φάρμακα (Medical Memory):\n" + "\n".join(f"• {l}" for l in med_lines))
-        # Medication schedule
-        med_schedule = snap.get("medication_schedule") or []
-        if isinstance(med_schedule, list) and med_schedule:
-            sched_lines = []
-            for d in med_schedule[:10]:
-                if isinstance(d, dict):
-                    med_name = d.get("medication_name") or ""
-                    dose = d.get("dosage") or ""
-                    due = d.get("due_at") or d.get("dose_date") or ""
-                    status = d.get("status") or ""
-                    if med_name and due:
-                        sched_lines.append(f"{due}: {med_name} {dose} [{status}]".strip())
-            if sched_lines:
-                parts.append("Πρόγραμμα Δόσεων (επόμενες):\n" + "\n".join(sched_lines))
+    # 3. Structured Exam Results
+    structured_results = snap.get("structured_exam_results") or snap.get("test_results") or []
+    if isinstance(structured_results, list) and structured_results:
+        res_lines = []
+        for r in structured_results:
+            if isinstance(r, dict):
+                date = r.get("test_date") or r.get("created_at") or ""
+                name_t = r.get("test_name") or r.get("display_name") or r.get("name") or ""
+                val = r.get("result_value") or r.get("value_numeric") or r.get("value") or ""
+                unit = r.get("unit") or ""
+                status = r.get("status") or r.get("abnormal_flag") or ""
+                line = f"{date}: {name_t} = {val} {unit}".strip().rstrip(":")
+                if status and status not in ("unknown", ""):
+                    _st_gr = {"normal": "φυσιολογικό", "high": "υψηλό", "low": "χαμηλό", "critical": "κρίσιμο", "abnormal": "εκτός ορίων"}.get(status.lower(), status)
+                    line += f" [{_st_gr}]"
+                res_lines.append(line)
+        if res_lines:
+            parts.append("3. ΕΞΕΤΑΣΕΙΣ:\n" + "\n".join(res_lines))
 
-    # --- TEST RESULTS (Structured Exams — from aa_exam_reports) ---
-    # IMPORTANT: Only structured, normalised exam data is used here.
-    # Raw blobs, OCR text and failed extracts are NEVER exposed as source of truth.
-    if load_all or "test_results" in intents:
-        # Primary source: structured_exam_results from the Exams Normalizer subsystem
-        structured_results = snap.get("structured_exam_results") or []
-        # Legacy fallback: raw test_results from WP snapshot (accepted only if no structured data)
-        raw_results = snap.get("test_results") or []
-
-        # Prefer structured data; use raw only if structured is completely absent
-        results_source = structured_results if structured_results else raw_results
-        source_label = "Εξετάσεις (Δομημένα)" if structured_results else "Εξετάσεις (WP Snapshot)"
-
-        if isinstance(results_source, list) and results_source:
-            res_lines = []
-            for r in results_source:
-                if isinstance(r, dict):
-                    date = r.get("test_date") or r.get("created_at") or ""
-                    name_t = r.get("test_name") or r.get("display_name") or r.get("name") or ""
-                    val = r.get("result_value") or r.get("value_numeric") or r.get("value") or ""
-                    unit = r.get("unit") or ""
-                    ref = r.get("reference_range") or ""
-                    status = r.get("status") or r.get("abnormal_flag") or ""
-                    note = r.get("notes") or r.get("note") or ""
-                    norm_status = r.get("normalization_status") or ""
-                    line = f"{date}: {name_t} = {val} {unit}".strip().rstrip(":")
-                    if ref:
-                        line += f" (Φυσιολογικό: {ref})"
-                    if status and status not in ("unknown", ""):
-                        # Translate English DB flags to Greek for AI readability
-                        _status_gr = {
-                            "normal":   "φυσιολογικό",
-                            "high":     "υψηλό",
-                            "low":      "χαμηλό",
-                            "critical": "κρίσιμο",
-                            "abnormal": "εκτός ορίων",
-                        }.get(status.lower(), status)
-                        line += f" [{_status_gr}]"
-                    if note:
-                        line += f" — {note[:80]}"
-                    if line.strip(":"):
-                        res_lines.append(line)
-            if res_lines:
-                parts.append(f"{source_label} ({len(res_lines)} εγγραφές):\n" + "\n".join(res_lines))
-
-    # --- BEST PROTOCOL ---
-    if load_all or "best_protocol" in intents:
-        best = snap.get("best_protocol") or snap.get("autoanosis_best_protocol") or snap.get("medical_snapshot")
-        if isinstance(best, list) and best:
-            best = best[0]
-        if best and isinstance(best, dict):
-            bp = []
-            if best.get("visit_date"):    bp.append(f"Ημερομηνία Ραντεβού: {best['visit_date']}")
-            if best.get("visit_doctor"):  bp.append(f"Ιατρός/Ειδικότητα: {best['visit_doctor']}")
-            if best.get("visit_goal"):    bp.append(f"Στόχος επίσκεψης: {best['visit_goal']}")
-            if best.get("visit_period"):  bp.append(f"Περίοδος αναφοράς: {best['visit_period']}")
-            if best.get("b_meds"):        bp.append(f"[B] Φάρμακα & δοσολογία: {best['b_meds']}")
-            _b_adh = best.get("b_adherence") or best.get("b_side")
-            if _b_adh:                    bp.append(f"[B] Συμμόρφωση & παρενέργειες: {_b_adh}")
-            if best.get("b_labs"):        bp.append(f"[B] Εξετάσεις εκτός ορίων: {best['b_labs']}")
-            _b_notes = best.get("b_notes") or best.get("b_baseline")
-            if _b_notes:                  bp.append(f"[B] Σημειώσεις baseline: {_b_notes}")
-            if best.get("e_infections"):  bp.append(f"[E] Λοιμώξεις/Ιώσεις: {best['e_infections']}")
-            if best.get("e_stress"):      bp.append(f"[E] Στρεσογόνα γεγονότα: {best['e_stress']}")
-            _e_life = best.get("e_lifestyle") or best.get("e_events")
-            if _e_life:                   bp.append(f"[E] Αλλαγές τρόπου ζωής: {_e_life}")
-            if best.get("e_other"):       bp.append(f"[E] Άλλα συμβάντα: {best['e_other']}")
-            _s_rows = []
-            for i in [1, 2, 3, 4, 5]:
-                sn = best.get(f"s{i}_name", "").strip() if best.get(f"s{i}_name") else ""
-                sv = best.get(f"s{i}_vas", "")
-                sp = best.get(f"s{i}_peak", "").strip() if best.get(f"s{i}_peak") else ""
-                sw = best.get(f"s{i}_worse", "").strip() if best.get(f"s{i}_worse") else ""
-                sb = best.get(f"s{i}_better", "").strip() if best.get(f"s{i}_better") else ""
-                if sn:
-                    row = f"{sn} VAS={sv}"
-                    if sp: row += f" | Ώρες αιχμής: {sp}"
-                    if sw: row += f" | Χειροτερεύει: {sw}"
-                    if sb: row += f" | Βελτιώνεται: {sb}"
-                    _s_rows.append(row)
-            if _s_rows:
-                bp.append(f"[S] Συμπτώματα: " + " / ".join(_s_rows))
-            if best.get("s_symptoms"):    bp.append(f"[S] Συμπτώματα (επιπλέον): {best['s_symptoms']}")
-            _s_tl = best.get("s_timeline") or best.get("s_timing")
-            if _s_tl:                     bp.append(f"[S] Χρονική χαρτογράφηση: {_s_tl}")
-            _s_fn = best.get("s_functional") or best.get("s_impact")
-            if _s_fn:                     bp.append(f"[S] Λειτουργικός αντίκτυπος: {_s_fn}")
-            _t_qol = best.get("t_qol") or best.get("t_goals")
-            if _t_qol:                    bp.append(f"[T] Στόχοι ποιότητας ζωής: {_t_qol}")
-            if best.get("t_biomarkers"):  bp.append(f"[T] Στόχοι βιοδεικτών: {best['t_biomarkers']}")
-            if best.get("t_questions"):   bp.append(f"[T] Ερωτήσεις προς ιατρό: {best['t_questions']}")
-            _t_plan = best.get("t_plan") or best.get("t_treatments")
-            if _t_plan:                   bp.append(f"[T] Πλάνο/Θεραπείες: {_t_plan}")
-            _ts = best.get("ts") or best.get("timestamp") or best.get("saved_at")
-            if _ts:                       bp.append(f"[Ημ/νία καταχώρισης BEST: {_ts}]")
-            if bp:
-                parts.append("BEST Protocol (Προετοιμασία Ραντεβού — B.E.S.T.):\n" + "\n".join(bp))
-
-        # BEST History
-        best_history = snap.get("best_history")
-        if best_history and isinstance(best_history, list) and len(best_history) >= 1:
-            _seen_sigs = set()
-            _deduped = []
-            for _h in best_history:
-                if not isinstance(_h, dict): continue
-                _ep = _h.get("payload") if ("payload" in _h and isinstance(_h.get("payload"), dict)) else _h
-                _sig = f"{_ep.get('visit_date', '')}|{_ep.get('visit_doctor', '')}"
-                if _sig in _seen_sigs: continue
-                _seen_sigs.add(_sig)
-                _deduped.append(_h)
-            best_history = _deduped
-            hist_lines = [f"Σύνολο καταχωρήσεων BEST: {len(best_history)}"]
-            start_idx = 1 if any("BEST Protocol" in p for p in parts) else 0
-            for idx, entry in enumerate(best_history[start_idx:], start=start_idx + 1):
-                if not isinstance(entry, dict):
-                    continue
-                ts_raw = entry.get("_saved_ts") or entry.get("ts") or entry.get("timestamp") or ""
-                e = entry.get("payload") if ("payload" in entry and isinstance(entry.get("payload"), dict)) else entry
-                ts_str = ""
-                if ts_raw:
-                    try:
-                        ts_str = f" [{datetime.fromtimestamp(int(ts_raw)).strftime('%Y-%m-%d')}]"
-                    except Exception:
-                        ts_str = f" [{ts_raw}]"
+    # 4. BEST History
+    best_history = snap.get("best_history") or []
+    best_current = snap.get("best_protocol")
+    if best_current and isinstance(best_current, list): best_current = best_current[0]
+    
+    best_lines = []
+    if best_current and isinstance(best_current, dict):
+        vd = best_current.get("visit_date", "")
+        vdr = best_current.get("visit_doctor", "")
+        best_lines.append(f"Τελευταίο BEST ({vd} - {vdr}):")
+        if best_current.get("b_labs"): best_lines.append(f"  Εξετάσεις: {best_current['b_labs']}")
+        if best_current.get("s_symptoms"): best_lines.append(f"  Συμπτώματα: {best_current['s_symptoms']}")
+        if best_current.get("t_questions"): best_lines.append(f"  Ερωτήσεις: {best_current['t_questions']}")
+        
+    if isinstance(best_history, list) and best_history:
+        best_lines.append(f"Ιστορικό BEST: {len(best_history)} παλαιότερες καταχωρήσεις")
+        for idx, h in enumerate(best_history[:3]): # Limit to 3 recent for context size
+            e = h.get("payload") if isinstance(h, dict) and "payload" in h else h
+            if isinstance(e, dict):
                 vd = e.get("visit_date", "")
                 vdr = e.get("visit_doctor", "")
-                vg = e.get("visit_goal", "")
-                header = f"  Καταχώρηση #{idx}{ts_str}: Ραντεβού {vd} — {vdr}"
-                if vg: header += f" ({vg})"
-                hist_lines.append(header)
-                if e.get("b_meds"): hist_lines.append(f"    Φάρμακα: {e['b_meds']}")
-                if e.get("b_notes"): hist_lines.append(f"    Σημειώσεις: {e['b_notes']}")
-                if e.get("b_labs"): hist_lines.append(f"    Εξετάσεις: {e['b_labs']}")
-                if e.get("e_stress"): hist_lines.append(f"    Στρες: {e['e_stress']}")
-                if e.get("e_infections"): hist_lines.append(f"    Λοιμώξεις: {e['e_infections']}")
-                if e.get("e_other"): hist_lines.append(f"    Άλλα: {e['e_other']}")
-                for i in [1, 2, 3, 4, 5]:
-                    sn = e.get(f"s{i}_name", "").strip() if e.get(f"s{i}_name") else ""
-                    sv = e.get(f"s{i}_vas", "")
-                    sw = e.get(f"s{i}_worse", "").strip() if e.get(f"s{i}_worse") else ""
-                    sb = e.get(f"s{i}_better", "").strip() if e.get(f"s{i}_better") else ""
-                    if sn:
-                        s_line = f"    Σύμπτωμα: {sn} VAS={sv}"
-                        if sw: s_line += f" | Χειροτ.: {sw}"
-                        if sb: s_line += f" | Βελτ.: {sb}"
-                        hist_lines.append(s_line)
-                _t = e.get("t_qol") or e.get("t_goals")
-                if _t: hist_lines.append(f"    Στόχος ποιότητας ζωής: {_t}")
-                _tp = e.get("t_plan") or e.get("t_treatments")
-                if _tp: hist_lines.append(f"    Πλάνο/Ερωτήσεις: {_tp}")
-            if len(hist_lines) > 1:
-                parts.append("Ιστορικό BEST (όλες οι καταχωρήσεις):\n" + "\n".join(hist_lines))
-            elif hist_lines:
-                parts.append(f"Σύνολο BEST καταχωρήσεων: {len(best_history)} (η τρέχουσα εγγραφή εμφανίζεται παραπάνω)")
+                best_lines.append(f"  - {vd} ({vdr}): {e.get('b_notes', '')[:50]}...")
+                
+    if best_lines:
+        parts.append("4. BEST HISTORY:\n" + "\n".join(best_lines))
 
-        # best_summary fallback
-        best_summary = snap.get("best_summary")
-        if best_summary and isinstance(best_summary, str) and best_summary.strip():
-            if not any("BEST Protocol" in p for p in parts):
-                parts.append(f"BEST Protocol (σύνοψη):\n{best_summary.strip()}")
+    # 5. Recent Check-ins
+    checkins = snap.get("recent_checkins") or []
+    if isinstance(checkins, list) and checkins:
+        ci_lines = []
+        for ci in checkins[:7]:
+            if isinstance(ci, dict):
+                d = ci.get("checkin_date", "")
+                pain = ci.get("pain_level", "")
+                fatigue = ci.get("fatigue_level", "")
+                energy = ci.get("energy_level", "")
+                ci_lines.append(f"{d}: πόνος={pain}, κόπωση={fatigue}, ενέργεια={energy}")
+        if ci_lines:
+            parts.append("5. RECENT CHECK-INS:\n" + "\n".join(ci_lines))
 
-    # --- CHECK-INS ---
-    if load_all or "checkins" in intents:
-        checkins = snap.get("recent_checkins") or []
-        if isinstance(checkins, list) and checkins:
-            ci_lines = []
-            for ci in checkins[:7]:
-                if isinstance(ci, dict):
-                    d = ci.get("checkin_date", "")
-                    pain = ci.get("pain_level", "")
-                    fatigue = ci.get("fatigue_level", "")
-                    energy = ci.get("energy_level", "")
-                    mood = ci.get("mood_level", "")
-                    notes = ci.get("notes", "")
-                    line = f"{d}: πόνος={pain}, κόπωση={fatigue}, ενέργεια={energy}, διάθεση={mood}"
-                    if notes:
-                        line += f", σημ.: {notes[:60]}"
-                    ci_lines.append(line)
-            if ci_lines:
-                parts.append("Καθημερινό Ημερολόγιο Συμπτωμάτων (check-ins):\n" + "\n".join(ci_lines))
+    # 6. Health Notes
+    notes = snap.get("health_notes") or []
+    if isinstance(notes, list) and notes:
+        n_lines = []
+        for n in notes[:3]:
+            if isinstance(n, dict):
+                d = n.get("created_at") or n.get("date") or ""
+                t = n.get("note_title") or n.get("title") or ""
+                n_lines.append(f"{d}: {t}")
+        if n_lines:
+            parts.append("6. HEALTH NOTES:\n" + "\n".join(n_lines))
 
-    # --- SYMPTOMS ---
-    if load_all or "symptoms" in intents:
-        symptoms = snap.get("recent_symptoms") or []
-        if isinstance(symptoms, list) and symptoms:
-            sym_names = []
-            for s in symptoms[:10]:
-                if isinstance(s, dict):
-                    sn = s.get("symptom_name") or s.get("name") or s.get("symptom") or ""
-                    if sn:
-                        sym_names.append(sn)
-            if sym_names:
-                parts.append(f"Πρόσφατα συμπτώματα: {', '.join(sym_names)}")
+    # 7. Health Tracking
+    tracking = snap.get("health_tracking") or []
+    if isinstance(tracking, list) and tracking:
+        t_lines = []
+        for t in tracking[:5]:
+            if isinstance(t, dict):
+                d = t.get("tracked_at") or ""
+                m = t.get("metric_name") or ""
+                v = t.get("metric_value") or ""
+                t_lines.append(f"{d}: {m}={v}")
+        if t_lines:
+            parts.append("7. HEALTH TRACKING:\n" + "\n".join(t_lines))
 
-    # --- HEALTH PROFILE (always for full_profile) ---
-    if load_all:
-        hp = snap.get("health_profile")
-        if isinstance(hp, dict) and hp:
-            hp_parts = []
-            for k, v in hp.items():
-                if v and k not in ("id", "user_id", "created_at", "updated_at"):
-                    hp_parts.append(f"{k}: {v}")
-            if hp_parts:
-                parts.append("Προφίλ υγείας: " + ", ".join(hp_parts[:8]))
+    # 8. Medication Schedule
+    sched = snap.get("medication_schedule") or []
+    if isinstance(sched, list) and sched:
+        s_lines = []
+        for s in sched[:5]:
+            if isinstance(s, dict):
+                d = s.get("due_at") or ""
+                m = s.get("medication_name") or ""
+                st = s.get("status") or ""
+                s_lines.append(f"{d}: {m} [{st}]")
+        if s_lines:
+            parts.append("8. MEDICATION SCHEDULE:\n" + "\n".join(s_lines))
 
-        # Health notes
-        health_notes = snap.get("health_notes") or []
-        if isinstance(health_notes, list) and health_notes:
-            hn_lines = []
-            for n in health_notes:
-                if isinstance(n, dict):
-                    date = n.get("created_at") or n.get("date") or ""
-                    title = n.get("note_title") or n.get("title") or ""
-                    body = n.get("note_content") or n.get("content") or n.get("note") or ""
-                    line = f"{date}: {title} — {body[:120]}".strip().rstrip("—").strip()
-                    if line.strip(":"): hn_lines.append(line)
-            if hn_lines:
-                parts.append("Σημειώσεις Υγείας:\n" + "\n".join(hn_lines))
-
-        # Health tracking
-        health_tracking = snap.get("health_tracking") or []
-        if isinstance(health_tracking, list) and health_tracking:
-            ht_lines = []
-            for t in health_tracking[:15]:
-                if isinstance(t, dict):
-                    date = t.get("tracked_at") or t.get("date") or ""
-                    metric = t.get("metric_name") or t.get("metric") or t.get("type") or ""
-                    val = t.get("metric_value") or t.get("value") or ""
-                    unit = t.get("unit") or ""
-                    line = f"{date}: {metric} = {val} {unit}".strip().rstrip(":")
-                    if line.strip(":"): ht_lines.append(line)
-            if ht_lines:
-                parts.append("Παρακολούθηση Υγείας:\n" + "\n".join(ht_lines))
+    # 9. Trend Summary
+    trend = snap.get("trend_summary")
+    if isinstance(trend, str) and trend:
+        parts.append(f"9. TREND SUMMARY:\n{trend}")
 
     if not parts:
         return ""
 
     return (
-        "\n\nΠΡΟΣΩΠΙΚΑ ΙΑΤΡΙΚΑ ΔΕΔΟΜΕΝΑ ΧΡΗΣΤΗ:\n"
+        "\n\nCANONICAL MEDICAL CONTEXT:\n"
         + "\n\n".join(parts)
-        + "\n\nΧρησιμοποίησε αυτά τα στοιχεία για να δώσεις προσωποποιημένες απαντήσεις."
     )
+
 
 
 def extract_context_from_wp_push(wp_context: dict, message: str = "") -> str:
@@ -615,8 +412,8 @@ def extract_context_from_wp_push(wp_context: dict, message: str = "") -> str:
     # Shape A: unified snapshot
     unified = wp_context.get("unified") or (inner.get("unified") if isinstance(inner, dict) else {}) or {}
     if isinstance(unified, dict) and unified:
-        intents = detect_intent(message) if message else ["full_profile"]
-        return build_selective_context(unified, intents)
+        intent = detect_intent(message) if message else "summary"
+        return build_selective_context(unified, intent)
 
     # Shape B: Autoa_AI_Context_Builder output
     if "user_profile" in wp_context or "health_data" in wp_context:
@@ -624,13 +421,13 @@ def extract_context_from_wp_push(wp_context: dict, message: str = "") -> str:
 
     # Shape C: helpers.php autoa_rest_chat_proxy snapshot
     if any(k in wp_context for k in ("health_info", "autoimmune_type", "user_name", "recent_checkins", "medications", "best_protocol", "test_results")):
-        intents = detect_intent(message) if message else ["full_profile"]
+        intent = detect_intent(message) if message else "summary"
         logger.info(f"[CTX] Smart Context Router — intents={intents}")
-        return build_selective_context(wp_context, intents)
+        return build_selective_context(wp_context, intent)
 
     # Fallback: treat as aggregator snapshot
-    intents = detect_intent(message) if message else ["full_profile"]
-    return build_selective_context(wp_context, intents)
+    intent = detect_intent(message) if message else "summary"
+    return build_selective_context(wp_context, intent)
 
 
 def build_context_from_builder(ctx: dict) -> str:
@@ -689,76 +486,103 @@ def build_context_from_builder(ctx: dict) -> str:
 # SYSTEM PROMPTS
 # ===========================================================================
 
-SYSTEM_PROMPT_BASE = """Είσαι ο Autoanosis Assistant, ένας εξειδικευμένος βοηθός υγείας.
+SYSTEM_PROMPT_BASE = """Είσαι ο Autoanosis Assistant.
 Απαντάς αυστηρά στα ελληνικά, με κλινικό, επαγγελματικό και συνοπτικό ύφος.
 ΔΕΝ είσαι γιατρός. ΔΕΝ κάνεις διάγνωση. Παρέχεις μόνο ανάλυση δεδομένων."""
 
-def build_system_prompt(snapshot: str, intents: list[str]) -> str:
-    """Build system prompt based on available context and detected intents."""
+def build_system_prompt(snapshot: str, intent: str) -> str:
+    """Build system prompt based on canonical context and deterministic intent."""
     if not snapshot:
         return SYSTEM_PROMPT_BASE
 
-    intent_instructions = {
-        "medications": "Εστίασε μόνο σε φάρμακα, δοσολογία και ώρες λήψης.",
-        "test_results": "Εστίασε μόνο σε εξετάσεις. Ανέφερε μόνο τιμές εκτός ορίων (abnormal).",
-        "best_protocol": "Εστίασε μόνο στο BEST Protocol.",
-        "checkins": "Εστίασε μόνο στο ημερολόγιο συμπτωμάτων.",
-        "symptoms": "Εστίασε μόνο σε συμπτώματα (ένταση/τάση).",
-        "full_profile": """Δώσε σύντομη κλινική σύνοψη με αυστηρά αυτή τη δομή (max 150 λέξεις συνολικά):
+    templates = {
+        "summary": """
+Σταθερή δομή απάντησης (max 150 λέξεις):
 
-ΤΙ ΒΛΕΠΩ: [max 4 bullets — μόνο τα πιο κλινικά σημαντικά ευρήματα: abnormal τιμές, ενεργά φάρμακα, τελευταία BEST εγγραφή αν υπάρχει. ΜΗΝ κάνεις dump όλων των εξετάσεων — μόνο top abnormal/relevant.]
-ΤΙ ΧΡΕΙΑΖΕΤΑΙ ΠΡΟΣΟΧΗ: [max 2 bullets — μόνο αν υπάρχει κάτι εκτός ορίων ή αξιοσημείωτο]
-ΤΙ ΔΕΝ ΜΠΟΡΩ ΝΑ ΣΥΜΠΕΡΑΝΩ: [1 γραμμή — ρητός περιορισμός]
+ΤΙ ΒΛΕΠΩ:
+[max 4 bullets — μόνο τα πιο κλινικά σημαντικά ευρήματα: abnormal τιμές, ενεργά φάρμακα, τελευταία BEST εγγραφή αν υπάρχει. ΜΗΝ κάνεις dump όλων των εξετάσεων — μόνο top abnormal/relevant.]
 
-ΑΝ κάτι δεν υπάρχει στο context, παράλειψέ το εντελώς — μην εξηγείς γιατί δεν το βλέπεις.""",
-        "pattern_detection": """Παρουσίασε τάσεις με αυτή τη δομή (max 120 λέξεις):
+ΤΙ ΧΡΕΙΑΖΕΤΑΙ ΠΡΟΣΟΧΗ:
+[max 2 bullets — μόνο αν υπάρχει κάτι εκτός ορίων ή αξιοσημείωτο]
 
-ΤΙ ΒΛΕΠΩ (τελευταία 7 ημέρες): [max 3 bullets — τάσεις adherence, check-ins, abnormal results]
-ΤΙ ΧΡΕΙΑΖΕΤΑΙ ΠΡΟΣΟΧΗ: [max 2 bullets — αν υπάρχει επιδείνωση ή αξιοσημείωτη αλλαγή]
-ΤΙ ΔΕΝ ΜΠΟΡΩ ΝΑ ΣΥΜΠΕΡΑΝΩ: [1 γραμμή]
+ΤΙ ΔΕΝ ΜΠΟΡΩ ΝΑ ΣΥΜΠΕΡΑΝΩ:
+[1 γραμμή — ρητός περιορισμός]
+""",
+        "pattern_detection": """
+Σταθερή δομή απάντησης (max 120 λέξεις):
 
-ΚΡΙΣΙΜΟ: Τα trend data αντιπροσωπεύουν ΜΟΝΟ σύγκριση τελευταίων 7 ημερών — ΔΕΝ είναι μακροχρόνιο μοτίβο. Παρουσίαζέ τα ως 'τάση τελευταίας εβδομάδας', ΟΧΙ ως 'μοτίβο'. ΜΗΝ βγάζεις διαγνωστικά συμπεράσματα.""",
-        "report": "Ο χρήστης ζητά έκθεση για γιατρό. Πες του να χρησιμοποιήσει το κουμπί 'Δημιουργία Ιατρικής Έκθεσης'.",
+ΤΑΣΗ ΤΕΛΕΥΤΑΙΑΣ ΕΒΔΟΜΑΔΑΣ:
+[max 3 bullets — τάσεις adherence, check-ins, abnormal results. Μιλάς ΜΟΝΟ για 7-day/recent trend. ΑΠΑΓΟΡΕΥΕΤΑΙ η λέξη "μακροχρόνιο μοτίβο".]
+
+ΤΙ ΘΕΛΕΙ ΠΑΡΑΚΟΛΟΥΘΗΣΗ:
+[max 2 bullets — αν υπάρχει επιδείνωση ή αξιοσημείωτη αλλαγή]
+
+ΠΕΡΙΟΡΙΣΜΟΣ:
+[1 γραμμή]
+""",
+        "doctor_report": """
+ΑΥΤΟ ΕΙΝΑΙ DOCTOR REPORT MODE.
+Ο χρήστης ζήτησε πλήρη αναφορά για τον γιατρό. 
+ΑΠΑΓΟΡΕΥΕΤΑΙ να πεις "δεν μπορώ να δώσω όλο το ιστορικό". 
+ΑΠΑΓΟΡΕΥΕΤΑΙ να δώσεις απλή σύνοψη.
+Παρουσίασε το διαθέσιμο ιστορικό με καθαρή δομή, όχι raw dump.
+
+Σταθερή δομή απάντησης:
+
+1. ΒΑΣΙΚΟ ΠΡΟΦΙΛ
+[Πάθηση, γενικά στοιχεία]
+
+2. ΧΡΟΝΟΛΟΓΙΚΟ ΙΣΤΟΡΙΚΟ / BEST / CHECK-INS / NOTES
+[Σύνοψη του ιστορικού από τα BEST, check-ins, notes]
+
+3. ΦΑΡΜΑΚΑ
+[Λίστα φαρμάκων με δοσολογίες και πρόγραμμα]
+
+4. ΕΞΕΤΑΣΕΙΣ
+[Λίστα εξετάσεων με ημερομηνίες και abnormal findings]
+
+5. ΣΗΜΑΝΤΙΚΑ ΚΛΙΝΙΚΑ ΣΗΜΕΙΑ
+[Τι ξεχωρίζει κλινικά από όλο το context]
+
+6. ΘΕΜΑΤΑ ΠΟΥ ΧΡΕΙΑΖΟΝΤΑΙ ΙΑΤΡΙΚΗ ΑΞΙΟΛΟΓΗΣΗ
+[Τι πρέπει να συζητηθεί με τον ιατρό]
+""",
+        "education": """
+ΑΥΤΟ ΕΙΝΑΙ EDUCATION MODE.
+Απάντησε γενικά και εκπαιδευτικά. Μην μπλέκεις με το ατομικό ιστορικό εκτός αν ζητηθεί.
+
+Σταθερή δομή απάντησης:
+- Τι είναι
+- Συνήθη συμπτώματα / έννοιες
+- Πότε χρειάζεται γιατρό
+- Τι ΔΕΝ σημαίνει αυτόματα
+"""
     }
 
-    specific_instructions = []
-    for intent in intents:
-        if intent in intent_instructions:
-            specific_instructions.append(intent_instructions[intent])
+    intent_template = templates.get(intent, templates["summary"])
 
-    prompt = f"""Είσαι ο Autoanosis Assistant. Απαντάς στα ελληνικά με αυστηρά κλινικό, συνοπτικό ύφος (χωρίς περιττά λόγια).
+    prompt = f"""Είσαι ο Autoanosis Assistant. Απαντάς στα ελληνικά με αυστηρά κλινικό ύφος.
 
-ΟΡΙΣΜΟΙ (ΚΡΙΣΙΜΟ):
-- Το B.E.S.T. στο Autoanosis είναι πρωτόκολλο προετοιμασίας ραντεβού (Baseline, Events, Symptoms, Targets). ΔΕΝ είναι εξέταση αίματος.
-- Αναφέρεσαι ΜΟΝΟ σε κατηγορίες που υπάρχουν στο context. ΜΗΝ αναφέρεις BEST, check-ins ή συμπτώματα αν δεν υπάρχουν στο context — απλώς παράλειψέ τα.
-
-ΙΑΤΡΙΚΟ ΠΡΟΦΙΛ ΧΡΗΣΤΗ (ΥΠΟΧΡΕΩΤΙΚΗ ΧΡΗΣΗ):
 {snapshot}
 
-ΚΑΝΟΝΕΣ (ΥΠΟΧΡΕΩΤΙΚΟΙ):
-- ΕΧΕΙΣ πρόσβαση στα παραπάνω ιατρικά δεδομένα και ΠΡΕΠΕΙ να τα χρησιμοποιείς ΠΑΝΤΑ.
-    - ΜΗΝ πεις ΠΟΤΕ "δεν έχω πρόσβαση" ή "δεν μπορώ να δω προσωπικά δεδομένα" ή "βλέπω μόνο όσα έχεις μοιραστεί" ή παρόμοιες filler φράσεις.
-    - Αν κάτι δεν υπάρχει στο context, παράλειψέ το εντελώς — μην εξηγείς γιατί δεν το βλέπεις.
-    - ΜΗΝ κάνεις dump όλων των εξετάσεων όταν ο χρήστης ζητά σύνοψη — μόνο top abnormal/clinically relevant findings.
-- ΜΟΝΟ τα δεδομένα που βλέπεις παραπάνω είναι αληθινά — τίποτα άλλο.
-- Όταν αναφέρεις φάρμακα, ΠΑΝΤΑ ανέφερε και τις ώρες λήψης αν υπάρχουν.
-- Απαντάς στα ελληνικά.
-- Στο context υπάρχουν ετικέτες σε αγκύλες όπως [υψηλό], [χαμηλό], [φυσιολογικό], [κρίσιμο]. Αυτές είναι ΕΣΩΤΕΡΙΚΕΣ ετικέτες για δική σου κατανόηση. ΜΗΝ τις αναπαράγεις verbatim στην απάντησή σου — αντ' αυτού χρησιμοποίησε φυσική γλώσσα (π.χ. "είναι υψηλή", "βρίσκεται κάτω από το φυσιολογικό").
-- Γράφε με επαγγελματικό, κλινικό ύφος. Χωρίς περιττές εισαγωγές. Ξεκίνα απευθείας με τα ευρήματα.
+MODE ΛΕΙΤΟΥΡΓΙΑΣ: {intent.upper()}
+{intent_template}
 
-ΙΑΤΡΙΚΗ ΑΣΦΑΛΕΙΑ (ΑΠΟΛΥΤΩΣ ΥΠΟΧΡΕΩΤΙΚΟ):
-- ΔΕΝ αντικαθιστάς ιατρική συμβουλή και ΔΕΝ κάνεις διάγνωση.
-- ΑΠΑΓΟΡΕΥΕΤΑΙ να συνάγεις disease-specific συμπεράσματα (π.χ. "φαίνεται έξαρση", "υποδηλώνει υποτροπή", "ενδέχεται να είναι relapse") από μη ειδικούς δείκτες όπως CRP, HGB, RBC, PCT, άγχος, αϋπνία ή πόνος. Αυτοί οι δείκτες δεν είναι ειδικοί για καμία αυτοάνοση νόσο.
-- Χρησιμοποίησε ΠΑΝΤΑ τριεπίπεδη παρουσίαση όταν αναλύεις δεδομένα:
-  1. ΠΑΡΑΤΗΡΗΣΗ: Τι δείχνουν τα δεδομένα (π.χ. "Η τιμή CRP είναι 2.89 mg/dL, πάνω από το φυσιολογικό")
-  2. ΠΙΘΑΝΗ ΣΥΣΧΕΤΙΣΗ: Τι μπορεί να σχετίζεται (π.χ. "Αυξημένη CRP μπορεί να σχετίζεται με φλεγμονή ή λοίμωξη")
-  3. ΠΕΡΙΟΡΙΣΜΟΣ: Τι ΔΕΝ μπορεί να συναχθεί (π.χ. "Δεν μπορώ να συνδέσω αυτά τα ευρήματα με συγκεκριμένη έξαρση — αυτό απαιτεί κλινική αξιολόγηση")
-- Αντί για "φαίνεται έξαρση" ή "υποδηλώνει υποτροπή", χρησιμοποίησε: "υπάρχουν ευρήματα που χρήζουν ιατρικής αξιολόγησης"
-- Αν ο χρήστης ρωτήσει ρητά αν υπάρχει έξαρση/υποτροπή/relapse/worsening/flare ή παρόμοιο, ΑΠΑΓΟΡΕΥΕΤΑΙ να το παρουσιάσεις ως συμπέρασμα. Επιτρέπεται ΜΟΝΟ: "υπάρχουν στοιχεία που χρειάζονται ιατρική αξιολόγηση" ή "δεν μπορώ να επιβεβαιώσω έξαρση από αυτά τα δεδομένα μόνο". Απάντησε πάντα: "Δεν μπορώ να κρίνω αν υπάρχει έξαρση — αυτό απαιτεί νευρολογική εξέταση και εξειδικευμένα κριτήρια. Τα δεδομένα που βλέπω χρειάζονται αξιολόγηση από τον γιατρό σου."
+HARD RULES / BANNED BEHAVIOR (ΑΠΟΛΥΤΩΣ ΥΠΟΧΡΕΩΤΙΚΟ):
+- ΑΠΑΓΟΡΕΥΕΤΑΙ να πεις "βλέπω μόνο όσα έχεις μοιραστεί".
+- ΑΠΑΓΟΡΕΥΕΤΑΙ να πεις "δεν έχω πρόσβαση" ή "δεν μπορώ να δω προσωπικά δεδομένα" εφόσον υπάρχει context.
+- ΑΠΑΓΟΡΕΥΕΤΑΙ να κάνεις raw dump όλων των εξετάσεων σε summary queries.
+- ΑΠΑΓΟΡΕΥΕΤΑΙ να βαφτίζεις 7-day trend ως "μακροχρόνιο μοτίβο".
+- ΑΠΑΓΟΡΕΥΕΤΑΙ να δηλώνεις "έχεις έξαρση" ή να βγάζεις clinical diagnosis από μόνος σου.
+- ΑΠΑΓΟΡΕΥΕΤΑΙ να αρνείσαι full history όταν έχει ενεργοποιηθεί doctor_report.
+- ΑΠΑΓΟΡΕΥΕΤΑΙ να μπερδεύεις general education με patient-specific summary.
+- Αν κάποιο category λείπει από το context: παράλειψέ το σιωπηλά, ή γράψε "Δεν υπάρχει διαθέσιμο δεδομένο για την ενότητα Χ" στο doctor_report. Χωρίς filler φράσεις, χωρίς εξηγήσεις άμυνας.
+
+RELAPSE / FLARE SAFETY RULE:
+Για queries τύπου "έχω έξαρση;", "φαίνεται έξαρση;", "είναι relapse;", "επιδεινώνομαι;":
+Η απάντηση ΠΡΕΠΕΙ να είναι σταθερά: "Δεν μπορώ να επιβεβαιώσω έξαρση μόνο από αυτά τα δεδομένα. Αυτό απαιτεί νευρολογική αξιολόγηση και εξειδικευμένα κριτήρια."
+Μετά επιτρέπεται ΜΟΝΟ σύντομη αναφορά στα δεδομένα που θέλουν προσοχή. Όχι συμπέρασμα ότι υπάρχει έξαρση.
 """
-
-    if specific_instructions:
-        prompt += "\n\nΟΔΗΓΙΕΣ ΓΙΑ ΑΥΤΗ ΤΗΝ ΕΡΩΤΗΣΗ:\n" + "\n".join(f"• {i}" for i in specific_instructions)
 
     return prompt
 
@@ -1294,14 +1118,14 @@ def chat():
     wp_context = data.get("wp_context") or data.get("medical_snapshot")
     snapshot = ""
     snapshot_source = "none"
-    intents = ["full_profile"]
+    intent = "summary"
 
     if isinstance(wp_context, dict):
         ctx_key_used = "wp_context" if data.get("wp_context") else "medical_snapshot"
         logger.info(f"[CTX] received {ctx_key_used} keys={list(wp_context.keys())[:10]}")
 
         # Detect intent from user message
-        intents = detect_intent(user_message)
+        intent = detect_intent(user_message)
         logger.info(f"[ROUTER] user={user_id} intents={intents} message_preview={user_message[:50]}")
 
         # Build selective context
@@ -1319,7 +1143,7 @@ def chat():
         logger.warning(f"[CTX] no context received — type={type(wp_context).__name__} user={user_id}")
 
     # --- Build system prompt ---
-    system_prompt = build_system_prompt(snapshot, intents)
+    system_prompt = build_system_prompt(snapshot, intent)
     logger.info(f"[PROMPT] Medical context injected for user={user_id} source={snapshot_source} intents={intents}")
 
     # --- Build messages ---
@@ -1349,7 +1173,7 @@ def chat():
         return jsonify({
             "reply": ai_response,
             "conversation_id": conversation_id,
-            "intents": intents  # For debugging
+            "intent": intent  # For debugging
         })
 
     except Exception as e:
