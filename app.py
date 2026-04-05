@@ -241,6 +241,26 @@ def build_selective_context(snap: dict, intent: str) -> str:
     if not snap or not isinstance(snap, dict):
         return ""
 
+    # ── Change 1: Normalize aggregator v2.4.0 nested daily_checkins shape ──────
+    # aggregator v2.4.0 sends: { daily_checkins: { recent: [...], averages: {...}, trend: str } }
+    # build_selective_context expects flat: recent_checkins: [...]
+    # Also extract weekly averages and trend for pattern_detection context.
+    _daily = snap.get("daily_checkins")
+    if isinstance(_daily, dict):
+        # Promote nested recent list to flat recent_checkins if not already present
+        if not snap.get("recent_checkins") and isinstance(_daily.get("recent"), list):
+            snap = dict(snap)  # shallow copy — do not mutate caller's dict
+            snap["recent_checkins"] = _daily["recent"]
+        # Promote averages to weekly_stats for pattern_detection
+        if not snap.get("weekly_stats") and isinstance(_daily.get("averages"), dict):
+            snap = dict(snap) if "recent_checkins" not in snap else snap
+            snap["weekly_stats"] = _daily["averages"]
+        # Promote trend string to trend_summary if not already present
+        if not snap.get("trend_summary") and isinstance(_daily.get("trend"), str):
+            snap = dict(snap) if "weekly_stats" not in snap else snap
+            snap["trend_summary"] = _daily["trend"]
+    # ─────────────────────────────────────────────────────────────────────────
+
     parts = []
 
     # 1. Profile
@@ -259,6 +279,27 @@ def build_selective_context(snap: dict, intent: str) -> str:
     if prof_parts:
         parts.append("1. ΠΡΟΦΙΛ:\n" + " | ".join(prof_parts))
 
+    # ── Change 2: Greek frequency label normalization ────────────────────────
+    _FREQ_GR = {
+        "once daily": "Μία φορά ημερησίως",
+        "twice daily": "Δύο φορές ημερησίως",
+        "three times daily": "Τρεις φορές ημερησίως",
+        "four times daily": "Τέσσερις φορές ημερησίως",
+        "every other day": "Κάθε δεύτερη μέρα",
+        "weekly": "Εβδομαδιαία",
+        "once weekly": "Μία φορά εβδομαδιαία",
+        "twice weekly": "Δύο φορές εβδομαδιαία",
+        "monthly": "Μηνιαία",
+        "as needed": "Κατά ανάγκη",
+        "daily": "Ημερησίως",
+        "every 8 hours": "Κάθε 8 ώρες",
+        "every 12 hours": "Κάθε 12 ώρες",
+        "every 6 hours": "Κάθε 6 ώρες",
+    }
+    def _normalize_freq(f: str) -> str:
+        return _FREQ_GR.get(f.strip().lower(), f) if f else f
+    # ─────────────────────────────────────────────────────────────────────────
+
     # 2. Medications
     meds = snap.get("medications") or []
     if isinstance(meds, list) and meds:
@@ -267,7 +308,7 @@ def build_selective_context(snap: dict, intent: str) -> str:
             if isinstance(m, dict):
                 n = m.get("medication_name") or m.get("name") or m.get("drug_name") or ""
                 dose = m.get("dosage") or m.get("dose") or ""
-                freq = m.get("frequency") or ""
+                freq = _normalize_freq(m.get("frequency") or "")
                 slots = m.get("time_slots") or []
                 if n:
                     line = f"{n} {dose} {freq}".strip()
@@ -374,10 +415,22 @@ def build_selective_context(snap: dict, intent: str) -> str:
         if s_lines:
             parts.append("8. MEDICATION SCHEDULE:\n" + "\n".join(s_lines))
 
-    # 9. Trend Summary
+    # 9. Trend Summary + Weekly Stats (pattern_detection enrichment)
     trend = snap.get("trend_summary")
+    weekly = snap.get("weekly_stats")
+    trend_parts = []
     if isinstance(trend, str) and trend:
-        parts.append(f"9. TREND SUMMARY:\n{trend}")
+        _trend_gr = {"improving": "βελτίωση", "worsening": "επιδείνωση", "stable": "σταθερή", "no_data": "χωρίς δεδομένα", "insufficient_data": "ανεπαρκή δεδομένα"}
+        trend_parts.append(f"Τάση τελευταίας εβδομάδας: {_trend_gr.get(trend.lower(), trend)}")
+    if isinstance(weekly, dict):
+        avg_parts = []
+        for k, label in (("pain", "Πόνος"), ("fatigue", "Κόπωση"), ("energy", "Ενέργεια"), ("mood", "Διάθεση")):
+            if weekly.get(k) is not None:
+                avg_parts.append(f"{label}: {weekly[k]}/10")
+        if avg_parts:
+            trend_parts.append("Μέσοι όροι εβδομάδας — " + ", ".join(avg_parts))
+    if trend_parts:
+        parts.append("9. ΤΑΣΕΙΣ ΕΒΔΟΜΑΔΑΣ:\n" + "\n".join(trend_parts))
 
     if not parts:
         return ""
