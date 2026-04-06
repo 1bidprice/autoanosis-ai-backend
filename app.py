@@ -374,6 +374,8 @@ def build_selective_context(snap: dict, intent: str) -> str:
                 fatigue = ci.get("fatigue_level", "")
                 energy = ci.get("energy_level", "")
                 ci_lines.append(f"{d}: πόνος={pain}, κόπωση={fatigue}, ενέργεια={energy}")
+            elif isinstance(ci, str) and ci.strip():
+                ci_lines.append(ci.strip())
         if ci_lines:
             parts.append("5. RECENT CHECK-INS:\n" + "\n".join(ci_lines))
 
@@ -744,6 +746,8 @@ def generate_medical_report_pdf(snap: dict, user_id: int) -> bytes:
             energy = ci.get("energy_level", "")
             mood = ci.get("mood_level", "")
             ci_lines.append(f"{d}: πόνος={pain}, κόπωση={fatigue}, ενέργεια={energy}, διάθεση={mood}")
+        elif isinstance(ci, str) and ci.strip():
+            ci_lines.append(ci.strip())
     sections["checkins"] = "\n".join(ci_lines) if ci_lines else "Δεν καταγράφηκαν check-ins."
 
     # --- PASS 2: AI Analysis per category ---
