@@ -13,6 +13,10 @@ All write endpoints require a valid Autoanosis identity token (X-Identity-Token 
 GET /patients/<id>/reports accepts the token OR the internal proxy secret.
 """
 import logging
+import os
+import time
+import threading
+import requests as _http
 from flask import Blueprint, request, jsonify
 from sqlalchemy.orm import joinedload
 
@@ -56,27 +60,77 @@ def _require_identity_token():
     return int(uid), None
 
 
+# ---------------------------------------------------------------------------
+# WordPress role cache  (uid → (roles_set, expires_at))
+# TTL: 120 seconds — short enough to pick up role changes, long enough to avoid
+# hammering WordPress on every request.
+# ---------------------------------------------------------------------------
+_ROLE_CACHE: dict = {}
+_ROLE_CACHE_TTL = 120          # seconds
+_ROLE_CACHE_LOCK = threading.Lock()
+_ALLOWED_ROLES = frozenset({"doctor", "administrator"})
+
+
+def _fetch_wp_roles(uid: int) -> set:
+    """
+    Call GET /wp-json/autoa/v1/user-roles/{uid} on WordPress.
+    Returns a set of role slugs, or an empty set on any failure.
+    Deny-by-default: empty set means no access.
+    """
+    wp_url = os.environ.get("WORDPRESS_API_URL", "").rstrip("/")
+    wp_key = os.environ.get("WORDPRESS_API_KEY", "")
+    if not wp_url or not wp_key:
+        logger.error("[EXAMS] WORDPRESS_API_URL or WORDPRESS_API_KEY not set — role lookup impossible")
+        return set()
+    try:
+        resp = _http.get(
+            f"{wp_url}/wp-json/autoa/v1/user-roles/{uid}",
+            headers={"X-API-Key": wp_key},
+            timeout=5,
+        )
+        if resp.status_code == 200:
+            data = resp.json()
+            roles = data.get("roles", [])
+            if isinstance(roles, list):
+                return set(roles)
+        logger.warning("[EXAMS] Role lookup for uid=%s returned HTTP %s", uid, resp.status_code)
+    except Exception as exc:
+        logger.error("[EXAMS] Role lookup for uid=%s failed: %s", uid, exc)
+    return set()
+
+
+def _get_wp_roles(uid: int) -> set:
+    """Return cached roles for uid, refreshing if stale."""
+    now = time.monotonic()
+    with _ROLE_CACHE_LOCK:
+        entry = _ROLE_CACHE.get(uid)
+        if entry and now < entry[1]:
+            return entry[0]
+    # Cache miss or expired — fetch outside the lock to avoid blocking other threads
+    roles = _fetch_wp_roles(uid)
+    with _ROLE_CACHE_LOCK:
+        _ROLE_CACHE[uid] = (roles, now + _ROLE_CACHE_TTL)
+    return roles
+
+
 def _require_admin_token():
     """
-    Admin-level auth: requires X-Identity-Token AND the token uid must be in the
-    AUTOA_ADMIN_USER_IDS environment variable (comma-separated list of WordPress user IDs).
-    Returns (admin_uid: int, error_response) — exactly one will be None.
+    Doctor/Admin gate.
+    1. Verifies X-Identity-Token (HMAC, expiry).
+    2. Looks up the user's WordPress roles via the internal REST endpoint,
+       with a 120-second in-process cache.
+    3. Allows only users whose roles intersect {doctor, administrator}.
+    4. Deny-by-default: any lookup failure → 403.
+    Returns (uid: int, error_response) — exactly one will be None.
     """
-    import os
     uid, err = _require_identity_token()
     if err:
         return None, err
 
-    admin_ids_raw = os.environ.get("AUTOA_ADMIN_USER_IDS", "")
-    if not admin_ids_raw:
-        # If env var not set, fall back to allowing any authenticated user (dev mode)
-        logger.warning("[EXAMS] AUTOA_ADMIN_USER_IDS not set — admin endpoints open to all authenticated users")
-        return uid, None
-
-    admin_ids = {int(x.strip()) for x in admin_ids_raw.split(",") if x.strip().isdigit()}
-    if uid not in admin_ids:
-        logger.warning("[EXAMS] Admin access denied for uid=%s", uid)
-        return None, (jsonify({"error": "forbidden", "detail": "admin_required"}), 403)
+    roles = _get_wp_roles(uid)
+    if not roles.intersection(_ALLOWED_ROLES):
+        logger.warning("[EXAMS] Doctor/admin access denied for uid=%s roles=%s", uid, roles)
+        return None, (jsonify({"error": "forbidden", "detail": "doctor_or_admin_required"}), 403)
 
     return uid, None
 

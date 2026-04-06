@@ -27,3 +27,11 @@ services:
       # Generate with: python3 -c "import secrets; print(secrets.token_hex(32))"
       - key: AUTOANOSIS_IDENTITY_SECRET
         sync: false
+      # WORDPRESS_API_URL: Base URL of the WordPress site (no trailing slash)
+      # Example: https://autoanosis.com
+      - key: WORDPRESS_API_URL
+        sync: false
+      # WORDPRESS_API_KEY: Shared secret for internal WordPress REST API calls.
+      # Must match the value in the Autoanosis Identity Bridge plugin (AUTOA_INTERNAL_API_KEY).
+      - key: WORDPRESS_API_KEY
+        sync: false
