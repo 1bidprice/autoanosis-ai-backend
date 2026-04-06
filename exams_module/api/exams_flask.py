@@ -14,9 +14,6 @@ GET /patients/<id>/reports accepts the token OR the internal proxy secret.
 """
 import logging
 import os
-import time
-import threading
-import requests as _http
 from flask import Blueprint, request, jsonify
 from sqlalchemy.orm import joinedload
 
@@ -61,66 +58,26 @@ def _require_identity_token():
 
 
 # ---------------------------------------------------------------------------
-# WordPress role cache  (uid → (roles_set, expires_at))
-# TTL: 120 seconds — short enough to pick up role changes, long enough to avoid
-# hammering WordPress on every request.
+# Role gate — backed by the dedicated role_sync push store.
+# WordPress pushes roles to POST /internal/role-sync on every login.
+# Deny-by-default: empty set (no cached entry, expired, or push never received).
 # ---------------------------------------------------------------------------
-_ROLE_CACHE: dict = {}
-_ROLE_CACHE_TTL = 120          # seconds
-_ROLE_CACHE_LOCK = threading.Lock()
 _ALLOWED_ROLES = frozenset({"doctor", "administrator"})
 
 
-def _fetch_wp_roles(uid: int) -> set:
-    """
-    Call GET /wp-json/autoa/v1/user-roles/{uid} on WordPress.
-    Returns a set of role slugs, or an empty set on any failure.
-    Deny-by-default: empty set means no access.
-    """
-    wp_url = os.environ.get("WORDPRESS_API_URL", "").rstrip("/")
-    wp_key = os.environ.get("WORDPRESS_API_KEY", "")
-    if not wp_url or not wp_key:
-        logger.error("[EXAMS] WORDPRESS_API_URL or WORDPRESS_API_KEY not set — role lookup impossible")
-        return set()
-    try:
-        resp = _http.get(
-            f"{wp_url}/wp-json/autoa/v1/user-roles/{uid}",
-            headers={"X-API-Key": wp_key},
-            timeout=5,
-        )
-        if resp.status_code == 200:
-            data = resp.json()
-            roles = data.get("roles", [])
-            if isinstance(roles, list):
-                return set(roles)
-        logger.warning("[EXAMS] Role lookup for uid=%s returned HTTP %s", uid, resp.status_code)
-    except Exception as exc:
-        logger.error("[EXAMS] Role lookup for uid=%s failed: %s", uid, exc)
-    return set()
-
-
 def _get_wp_roles(uid: int) -> set:
-    """Return cached roles for uid, refreshing if stale."""
-    now = time.monotonic()
-    with _ROLE_CACHE_LOCK:
-        entry = _ROLE_CACHE.get(uid)
-        if entry and now < entry[1]:
-            return entry[0]
-    # Cache miss or expired — fetch outside the lock to avoid blocking other threads
-    roles = _fetch_wp_roles(uid)
-    with _ROLE_CACHE_LOCK:
-        _ROLE_CACHE[uid] = (roles, now + _ROLE_CACHE_TTL)
-    return roles
+    """Return cached roles for uid from the role_sync push store."""
+    from exams_module.api.role_sync import get_cached_roles
+    return get_cached_roles(uid)
 
 
 def _require_admin_token():
     """
     Doctor/Admin gate.
     1. Verifies X-Identity-Token (HMAC, expiry).
-    2. Looks up the user's WordPress roles via the internal REST endpoint,
-       with a 120-second in-process cache.
+    2. Reads roles from the dedicated role_sync push store (WordPress→Render push).
+       Deny-by-default: no cached entry, expired cache, or invalid push → 403.
     3. Allows only users whose roles intersect {doctor, administrator}.
-    4. Deny-by-default: any lookup failure → 403.
     Returns (uid: int, error_response) — exactly one will be None.
     """
     uid, err = _require_identity_token()

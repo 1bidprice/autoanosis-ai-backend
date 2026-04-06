@@ -11,9 +11,7 @@ services:
         value: 3.11.0
       # ---------------------------------------------------------------------------
       # Exams Ingestion + Normalizer subsystem
-      # DATABASE_URL: PostgreSQL connection string (Neon/Supabase)
-      # Format: postgresql://user:pass@host/dbname?sslmode=require
-      # Set this in the Render dashboard under Environment → Add Secret.
+      # DATABASE_URL: PostgreSQL connection string (Render PostgreSQL)
       # ---------------------------------------------------------------------------
       - key: DATABASE_URL
         sync: false
@@ -23,15 +21,13 @@ services:
         sync: false
       # AUTOANOSIS_IDENTITY_SECRET: shared HMAC secret for WordPress identity token signing.
       # Must match the value set in WordPress wp-config.php (AUTOANOSIS_IDENTITY_SECRET constant).
-      # CRITICAL: Without this, all /exams/ingest-from-ocr calls return HTTP 401 and no exam data is ever written.
-      # Generate with: python3 -c "import secrets; print(secrets.token_hex(32))"
       - key: AUTOANOSIS_IDENTITY_SECRET
         sync: false
-      # WORDPRESS_API_URL: Base URL of the WordPress site (no trailing slash)
-      # Example: https://autoanosis.com
-      - key: WORDPRESS_API_URL
+      # AUTOA_ROLE_SYNC_SECRET: HMAC-SHA256 shared secret for the WordPress→Render role push.
+      # Must match the AUTOA_ROLE_SYNC_SECRET constant in the WPCode role-sync snippet.
+      # Generate with: python3 -c "import secrets; print(secrets.token_hex(32))"
+      - key: AUTOA_ROLE_SYNC_SECRET
         sync: false
-      # WORDPRESS_API_KEY: Shared secret for internal WordPress REST API calls.
-      # Must match the value in the Autoanosis Identity Bridge plugin (AUTOA_INTERNAL_API_KEY).
-      - key: WORDPRESS_API_KEY
-        sync: false
+      # AUTOA_ROLE_CACHE_TTL: seconds a pushed role entry is valid (default: 300)
+      - key: AUTOA_ROLE_CACHE_TTL
+        value: "300"
