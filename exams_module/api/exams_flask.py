@@ -18,7 +18,7 @@ from sqlalchemy.orm import joinedload
 
 from exams_module.db.database import get_db
 from exams_module.models.exam_models import ExamDocument, ExamReport, ExamReviewQueue
-from exams_module.services.exam_service import create_document, process_document
+from exams_module.services.exam_service import create_document, process_document, log_event
 from exams_module.schemas.exam_schemas import DocumentCreate
 
 logger = logging.getLogger(__name__)
@@ -54,6 +54,31 @@ def _require_identity_token():
         return None, (jsonify({"error": "token_missing_uid"}), 401)
 
     return int(uid), None
+
+
+def _require_admin_token():
+    """
+    Admin-level auth: requires X-Identity-Token AND the token uid must be in the
+    AUTOA_ADMIN_USER_IDS environment variable (comma-separated list of WordPress user IDs).
+    Returns (admin_uid: int, error_response) — exactly one will be None.
+    """
+    import os
+    uid, err = _require_identity_token()
+    if err:
+        return None, err
+
+    admin_ids_raw = os.environ.get("AUTOA_ADMIN_USER_IDS", "")
+    if not admin_ids_raw:
+        # If env var not set, fall back to allowing any authenticated user (dev mode)
+        logger.warning("[EXAMS] AUTOA_ADMIN_USER_IDS not set — admin endpoints open to all authenticated users")
+        return uid, None
+
+    admin_ids = {int(x.strip()) for x in admin_ids_raw.split(",") if x.strip().isdigit()}
+    if uid not in admin_ids:
+        logger.warning("[EXAMS] Admin access denied for uid=%s", uid)
+        return None, (jsonify({"error": "forbidden", "detail": "admin_required"}), 403)
+
+    return uid, None
 
 
 def _db_session():
@@ -101,13 +126,22 @@ def create_exam_document():
 
     db = _db_session()
     try:
-        doc = create_document(db, payload)
+        doc, is_duplicate = create_document(db, payload)
+        if is_duplicate:
+            logger.info(f"[EXAMS] Duplicate document skipped: sha256={payload.sha256} patient={uid} existing={doc.id}")
+            return jsonify({
+                "document_id": doc.id,
+                "status": doc.status,
+                "duplicate": True,
+                "message": "Document already exists for this patient",
+            }), 200
         db.commit()
         db.refresh(doc)
         logger.info(f"[EXAMS] Document created: {doc.id} for patient {uid}")
         return jsonify({
             "document_id": doc.id,
             "status": doc.status,
+            "duplicate": False,
             "classifier_label": doc.classifier_label,
             "classifier_confidence": float(doc.classifier_confidence) if doc.classifier_confidence else None,
         }), 201
@@ -190,7 +224,15 @@ def ingest_from_ocr():
 
     db = _db_session()
     try:
-        doc = create_document(db, payload)
+        doc, is_duplicate = create_document(db, payload)
+        if is_duplicate:
+            logger.info(f"[EXAMS] Duplicate ingest skipped: sha256={payload.sha256} patient={uid} existing={doc.id}")
+            return jsonify({
+                "document_id": doc.id,
+                "status": doc.status,
+                "duplicate": True,
+                "message": "Document already exists for this patient",
+            }), 200
         db.flush()
         result = process_document(db, doc)
         db.commit()
@@ -434,9 +476,9 @@ def get_patient_exam_snapshot(patient_id):
 def get_review_queue():
     """
     Returns all open review-queue items.
-    Requires X-Identity-Token (any authenticated user for now; restrict to admin role later).
+    Requires admin-level auth (X-Identity-Token + uid in AUTOA_ADMIN_USER_IDS).
     """
-    uid, err = _require_identity_token()
+    uid, err = _require_admin_token()
     if err:
         return err
 
@@ -462,5 +504,93 @@ def get_review_queue():
     except Exception as e:
         logger.error(f"[EXAMS] get_review_queue error: {e}")
         return jsonify({"error": "query_failed", "detail": str(e)}), 500
+    finally:
+        db.close()
+
+
+# ---------------------------------------------------------------------------
+# PATCH /exams/review-queue/<item_id>/resolve  (admin only)
+# ---------------------------------------------------------------------------
+
+@exams_bp.route("/review-queue/<item_id>/resolve", methods=["PATCH"])
+def resolve_review_queue_item(item_id):
+    """
+    Resolve a review-queue item: accept or reject the associated document.
+    Body (JSON): { action: "accept" | "reject", note?: string }
+    Requires admin-level auth (X-Identity-Token + uid in AUTOA_ADMIN_USER_IDS).
+
+    accept → document.status = "normalized", report.normalization_status = "manually_corrected"
+    reject → document.status = "failed", report.normalization_status = "rejected"
+    """
+    admin_uid, err = _require_admin_token()
+    if err:
+        return err
+
+    data = request.get_json(silent=True) or {}
+    action = data.get("action", "").strip().lower()
+    note = data.get("note", "").strip()
+
+    if action not in ("accept", "reject"):
+        return jsonify({"error": "invalid_action", "detail": "action must be 'accept' or 'reject'"}), 400
+
+    db = _db_session()
+    try:
+        item = db.query(ExamReviewQueue).filter(ExamReviewQueue.id == item_id).first()
+        if not item:
+            return jsonify({"error": "review_item_not_found"}), 404
+
+        if item.resolution_status != "open":
+            return jsonify({
+                "error": "already_resolved",
+                "resolution_status": item.resolution_status,
+            }), 409
+
+        # Resolve the queue item
+        item.resolution_status = "resolved"
+        item.resolved_by = admin_uid
+        item.resolution_note = note or None
+
+        # Update the document and its reports
+        doc = db.query(ExamDocument).filter(ExamDocument.id == item.document_id).first()
+        if doc:
+            if action == "accept":
+                doc.status = "normalized"
+                # Mark all reports for this document as manually_corrected
+                reports = db.query(ExamReport).filter(ExamReport.document_id == doc.id).all()
+                for r in reports:
+                    r.normalization_status = "manually_corrected"
+                log_event(db, doc.id, "manually_accepted", {
+                    "admin_uid": admin_uid,
+                    "note": note,
+                    "queue_item_id": item_id,
+                })
+            else:  # reject
+                doc.status = "failed"
+                reports = db.query(ExamReport).filter(ExamReport.document_id == doc.id).all()
+                for r in reports:
+                    r.normalization_status = "rejected"
+                    r.status = "archived"
+                log_event(db, doc.id, "manually_rejected", {
+                    "admin_uid": admin_uid,
+                    "note": note,
+                    "queue_item_id": item_id,
+                })
+
+        db.commit()
+        logger.info(
+            "[EXAMS] Review item %s resolved: action=%s admin=%s document=%s",
+            item_id, action, admin_uid, item.document_id,
+        )
+        return jsonify({
+            "id": item_id,
+            "document_id": item.document_id,
+            "action": action,
+            "resolution_status": "resolved",
+            "resolved_by": admin_uid,
+        }), 200
+    except Exception as e:
+        db.rollback()
+        logger.error(f"[EXAMS] resolve_review_queue_item error: {e}")
+        return jsonify({"error": "resolve_failed", "detail": str(e)}), 500
     finally:
         db.close()

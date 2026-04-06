@@ -25,7 +25,7 @@ class ExamDocument(Base):
     mime_type = Column(String(128))
     sha256 = Column(String(64), nullable=False, index=True)
     uploaded_at = Column(DateTime, server_default=func.now(), nullable=False)
-    status = Column(String(32), nullable=False, default="received")
+    status = Column(String(32), nullable=False, default="uploaded")
     ocr_text = Column(Text)
     raw_extraction_json = Column(JSON)
     parsing_errors = Column(JSON)
@@ -34,6 +34,8 @@ class ExamDocument(Base):
     classifier_confidence = Column(Numeric(5,4))
     is_duplicate = Column(Boolean, nullable=False, default=False)
     review_reason = Column(Text)
+    ingestion_source = Column(String(32), nullable=False, default="mobile_upload")
+    ocr_model_version = Column(String(64))
     reports = relationship("ExamReport", back_populates="document", cascade="all, delete-orphan")
     events = relationship("ExamProcessingEvent", back_populates="document", cascade="all, delete-orphan")
 
@@ -101,6 +103,8 @@ class ExamReviewQueue(Base):
     reason_text = Column(Text, nullable=False)
     resolution_status = Column(String(32), nullable=False, default="open")
     assigned_to = Column(Text)
+    resolved_by = Column(BigInteger)          # uid of admin who resolved
+    resolution_note = Column(Text)            # optional admin note on resolution
     created_at = Column(DateTime, server_default=func.now(), nullable=False)
     resolved_at = Column(DateTime)
 

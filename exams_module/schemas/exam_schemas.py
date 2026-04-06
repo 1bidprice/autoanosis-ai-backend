@@ -9,6 +9,8 @@ class DocumentCreate(BaseModel):
     mime_type: Optional[str] = None
     sha256: str
     raw_text: str = Field(default="", description="Extracted machine/OCR text")
+    ingestion_source: str = Field(default="mobile_upload", description="Origin: mobile_upload | web_upload | admin_upload")
+    ocr_model_version: Optional[str] = None
 
 class ProcessResponse(BaseModel):
     document_id: str
@@ -16,6 +18,11 @@ class ProcessResponse(BaseModel):
     normalization_status: str
     review_required: bool
     report_ids: List[str]
+
+class DuplicateResponse(BaseModel):
+    duplicate: bool
+    existing_document_id: str
+    message: str
 
 class ResultOut(BaseModel):
     display_name: str

@@ -44,6 +44,23 @@ def log_event(db: Session, document_id: str, event_type: str, payload=None):
 
 
 def create_document(db: Session, payload):
+    # Deduplication: sha256 + patient_id, skip only if prior non-failed record exists
+    existing = (
+        db.query(ExamDocument)
+        .filter(
+            ExamDocument.sha256 == payload.sha256,
+            ExamDocument.patient_id == payload.patient_id,
+            ExamDocument.status != "failed",
+        )
+        .first()
+    )
+    if existing:
+        logger.info(
+            "Duplicate document rejected: sha256=%s patient_id=%s existing_id=%s",
+            payload.sha256, payload.patient_id, existing.id,
+        )
+        return existing, True  # (document, is_duplicate)
+
     classifier_label, classifier_confidence = classify_document(payload.raw_text)
     doc = ExamDocument(
         patient_id=payload.patient_id,
@@ -52,15 +69,18 @@ def create_document(db: Session, payload):
         original_filename=payload.original_filename,
         mime_type=payload.mime_type,
         sha256=payload.sha256,
+        status="uploaded",
         ocr_text=payload.raw_text,
         raw_extraction_json={"raw_text_preview": payload.raw_text[:500]},
         classifier_label=classifier_label,
         classifier_confidence=_safe_decimal(classifier_confidence),
+        ingestion_source=getattr(payload, "ingestion_source", "mobile_upload"),
+        ocr_model_version=getattr(payload, "ocr_model_version", None),
     )
     db.add(doc)
     db.flush()
-    log_event(db, doc.id, "received", {"classifier_label": classifier_label})
-    return doc
+    log_event(db, doc.id, "uploaded", {"classifier_label": classifier_label, "ingestion_source": doc.ingestion_source})
+    return doc, False  # (document, is_duplicate)
 
 
 def _review(db: Session, doc, code, reason):
