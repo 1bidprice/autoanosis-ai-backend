@@ -44,7 +44,7 @@
  *   weekly_stats   → { days_with_checkin: 0, avg_*: null, checkin_dates: [] }
  *   latest_updates → []     (no recent updates)
  *
- * Version:     1.0.0
+ * Version:     1.1.0 — Fix: use current_time() instead of gmdate() for today comparison (timezone mismatch with checkin POST endpoint)
  * Author:      Autoanosis
  */
 
@@ -165,7 +165,7 @@ function autoa_home_snapshot_handler( WP_REST_Request $request ): WP_REST_Respon
         return new WP_REST_Response( array( 'error' => 'unauthenticated' ), 401 );
     }
 
-    $today = gmdate( 'Y-m-d' );
+    $today = current_time( 'Y-m-d' ); // Use WP local timezone (not UTC) to match checkin_date stored by POST endpoint
 
     // ── 1. today_checkin ──────────────────────────────────────────────────────
     $today_checkin = autoa_home_snapshot_today_checkin( $wpdb, $user_id, $today );
@@ -247,7 +247,7 @@ function autoa_home_snapshot_weekly_stats( wpdb $wpdb, int $user_id, string $tod
     }
 
     // 7-day window: today inclusive, going back 6 days
-    $week_start = gmdate( 'Y-m-d', strtotime( $today . ' -6 days' ) );
+    $week_start = date( 'Y-m-d', strtotime( $today . ' -6 days' ) ); // Use local date arithmetic (consistent with current_time above)
 
     $rows = $wpdb->get_results(
         $wpdb->prepare(
