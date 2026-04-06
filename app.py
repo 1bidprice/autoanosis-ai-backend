@@ -39,6 +39,7 @@ from exams_module.api.exams_flask import exams_bp
 from exams_module.api.reprocess import reprocess_bp
 from exams_module.api.audit_temp import audit_bp
 from exams_module.api.role_sync import role_sync_bp
+from exams_module.api.review_admin import review_admin_bp
 from exams_module.db.database import init_db
 
 # ---------------------------------------------------------------------------
@@ -59,6 +60,7 @@ app.register_blueprint(exams_bp)
 app.register_blueprint(reprocess_bp)
 app.register_blueprint(audit_bp)
 app.register_blueprint(role_sync_bp)
+app.register_blueprint(review_admin_bp)
 
 # Initialise exams tables on startup (safe no-op if already exist)
 try:
