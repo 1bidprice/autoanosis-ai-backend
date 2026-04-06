@@ -1045,23 +1045,12 @@ function autoa_rest_chat_proxy( WP_REST_Request $req ) {
             // NOTE: $snapshot['test_results'] is intentionally NOT set here.
             // The backend's build_selective_context() will prefer structured_exam_results.
         } else {
-            // Fallback: raw test_results from WP table (only if Exams API is unavailable)
-            // This fallback will be removed once all exams are migrated to the normalizer.
-            $test_results_table = $wpdb->prefix . 'autoanosis_test_results';
-            if ($wpdb->get_var("SHOW TABLES LIKE '$test_results_table'") === $test_results_table) {
-                $test_results = $wpdb->get_results($wpdb->prepare(
-                    "SELECT id, user_id, test_date, test_name, result_value, unit, reference_range, test_type, doctor_name, notes, created_at
-                    FROM $test_results_table
-                    WHERE user_id = %d
-                    ORDER BY test_date DESC, created_at DESC
-                    LIMIT 50",
-                    $user_id
-                ), ARRAY_A);
-                if (!empty($test_results)) {
-                    $snapshot['test_results'] = $test_results;
-                    error_log('[AUTOANOSIS EXAMS] FALLBACK: using raw test_results for user ' . $user_id . ' — Exams API unavailable');
-                }
-            }
+            // Exams API unavailable — explicit unavailable state (no raw fallback).
+            // Raw test_results are NEVER used as source of truth per architecture spec.
+            $snapshot['structured_exam_results'] = [];
+            $snapshot['exam_report_count']       = 0;
+            $snapshot['exams_unavailable']        = true;
+            error_log('[AUTOANOSIS EXAMS] Exams API unavailable for user ' . $user_id . ' — returning explicit unavailable state');
         }
         
         // 8. Get health notes
@@ -1435,23 +1424,12 @@ function autoa_rest_generate_report( WP_REST_Request $req ) {
         $snapshot['exam_report_count']       = $structured_exams['report_count'] ?? 0;
         // test_results is intentionally NOT set — backend prefers structured_exam_results
     } else {
-        // Fallback to raw WP table only when Exams API is unavailable
-        $test_results_table = $wpdb->prefix . 'autoanosis_test_results';
-        if ($wpdb->get_var("SHOW TABLES LIKE '$test_results_table'") === $test_results_table) {
-            $tests = $wpdb->get_results($wpdb->prepare(
-                "SELECT id, user_id, test_date, test_name, result_value, unit,
-                        reference_range, test_type, doctor_name, notes, created_at
-                 FROM $test_results_table
-                 WHERE user_id = %d
-                 ORDER BY test_date DESC, created_at DESC
-                 LIMIT 50",
-                $user_id
-            ), ARRAY_A);
-            if (!empty($tests)) {
-                $snapshot['test_results'] = $tests;
-                error_log('[AUTOANOSIS EXAMS] FALLBACK (doctor-dashboard): raw test_results for user ' . $user_id);
-            }
-        }
+        // Exams API unavailable — explicit unavailable state (no raw fallback).
+        // Raw test_results are NEVER used as source of truth per architecture spec.
+        $snapshot['structured_exam_results'] = [];
+        $snapshot['exam_report_count']       = 0;
+        $snapshot['exams_unavailable']        = true;
+        error_log('[AUTOANOSIS EXAMS] Exams API unavailable (doctor-dashboard) for user ' . $user_id . ' — returning explicit unavailable state');
     }
 
     // Health notes
