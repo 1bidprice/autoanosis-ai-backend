@@ -201,7 +201,7 @@ function autoa_home_snapshot_today_checkin( wpdb $wpdb, int $user_id, string $to
 
     $row = $wpdb->get_row(
         $wpdb->prepare(
-            "SELECT checkin_date, pain_level, fatigue_level, energy_level, mood_level, notes
+            "SELECT checkin_date, pain_level, fatigue_level, energy_level, mood_level, stiffness_level, inflammation_level, notes
              FROM `{$table}`
              WHERE user_id = %d
                AND checkin_date = %s
@@ -217,12 +217,14 @@ function autoa_home_snapshot_today_checkin( wpdb $wpdb, int $user_id, string $to
     }
 
     return array(
-        'date'          => $row['checkin_date'],
-        'pain_level'    => isset( $row['pain_level'] )    ? (int) $row['pain_level']    : null,
-        'fatigue_level' => isset( $row['fatigue_level'] ) ? (int) $row['fatigue_level'] : null,
-        'energy_level'  => isset( $row['energy_level'] )  ? (int) $row['energy_level']  : null,
-        'mood_level'    => isset( $row['mood_level'] )    ? (int) $row['mood_level']    : null,
-        'notes'         => ! empty( $row['notes'] ) ? (string) $row['notes'] : null,
+        'date'               => $row['checkin_date'],
+        'pain_level'         => isset( $row['pain_level'] )         ? (int) $row['pain_level']         : null,
+        'fatigue_level'      => isset( $row['fatigue_level'] )      ? (int) $row['fatigue_level']      : null,
+        'energy_level'       => isset( $row['energy_level'] )       ? (int) $row['energy_level']       : null,
+        'mood_level'         => isset( $row['mood_level'] )         ? (int) $row['mood_level']         : null,
+        'stiffness_level'    => isset( $row['stiffness_level'] )    ? (int) $row['stiffness_level']    : null,
+        'inflammation_level' => isset( $row['inflammation_level'] ) ? (int) $row['inflammation_level'] : null,
+        'notes'              => ! empty( $row['notes'] ) ? (string) $row['notes'] : null,
     );
 }
 
