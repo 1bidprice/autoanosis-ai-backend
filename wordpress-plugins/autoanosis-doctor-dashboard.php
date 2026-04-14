@@ -30,6 +30,7 @@ final class Autoanosis_Doctor_Dashboard_Rescue_Stable {
         add_action('init', array($this, 'register_role'));
         add_action('init', array($this, 'handle_actions'));
         add_action('wp_enqueue_scripts', array($this, 'enqueue_assets'));
+        add_filter('body_class', array($this, 'add_app_webview_body_class'));
 
         add_shortcode('autoanosis_doctor_dashboard', array($this, 'render_doctor_dashboard'));
         add_shortcode('autoanosis_doctor_connect', array($this, 'render_patient_request_form'));
@@ -207,10 +208,28 @@ final class Autoanosis_Doctor_Dashboard_Rescue_Stable {
           .aodd-wrap{padding-bottom:env(safe-area-inset-bottom,80px)}
         }
         @media (max-width: 700px){.aodd-card{padding:14px}.aodd-title{font-size:20px}.aodd-section-title{font-size:17px}.aodd-stat span{font-size:20px}}
+        body.autoa-app-webview header.header,
+        body.autoa-app-webview .nv-navbar,
+        body.autoa-app-webview footer#site-footer,
+        body.autoa-app-webview #wpadminbar,
+        body.autoa-app-webview #autoa-assistant,
+        body.autoa-app-webview #cmplz-cookiebanner-container
+        {display:none!important;visibility:hidden!important;pointer-events:none!important}
+        body.autoa-app-webview{overflow-x:hidden!important;padding-top:0!important;margin-top:0!important}
+        body.autoa-app-webview .neve-main{padding-top:8px!important}
+        body.autoa-app-webview .aodd-wrap{padding-bottom:calc(env(safe-area-inset-bottom,0px) + 80px)!important}
+        body.autoa-app-webview *{max-width:100vw;box-sizing:border-box}
         ';
         wp_register_style('aodd-rescue-style', false);
         wp_enqueue_style('aodd-rescue-style');
         wp_add_inline_style('aodd-rescue-style', $css);
+    }
+
+    public function add_app_webview_body_class($classes) {
+        if (!empty($_GET['app_mode'])) {
+            $classes[] = 'autoa-app-webview';
+        }
+        return $classes;
     }
 
     private function notice($msg, $type) {
