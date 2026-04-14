@@ -1,8 +1,8 @@
 <?php
 /*
 Plugin Name: Autoanosis Doctor Dashboard Rescue Stable
-Description: Production build for Autoanosis doctor workflow. Horizontal lab-style table display with units, reference ranges, and abnormal flags. AI normalizer integration via Render backend. Legacy user_meta exam parsing removed (v11.0.0).
-Version: 11.0.0
+Description: Production build for Autoanosis doctor workflow. Horizontal lab-style table display with units, reference ranges, and abnormal flags. AI normalizer integration via Render backend. Legacy user_meta exam parsing removed (v11.0.0). WebView bridge endpoint added (v11.1.0). Bridge moved from WPCode to plugin (v11.2.0).
+Version: 11.2.0
 Author: Autoanosis Team
 */
 
@@ -31,6 +31,7 @@ final class Autoanosis_Doctor_Dashboard_Rescue_Stable {
         add_action('init', array($this, 'handle_actions'));
         add_action('wp_enqueue_scripts', array($this, 'enqueue_assets'));
         add_filter('body_class', array($this, 'add_app_webview_body_class'));
+        add_action('rest_api_init', array($this, 'register_webview_bridge_route'));
 
         add_shortcode('autoanosis_doctor_dashboard', array($this, 'render_doctor_dashboard'));
         add_shortcode('autoanosis_doctor_connect', array($this, 'render_patient_request_form'));
@@ -234,6 +235,97 @@ final class Autoanosis_Doctor_Dashboard_Rescue_Stable {
 
     private function notice($msg, $type) {
         return '<div class="aodd-notice aodd-' . esc_attr($type) . '">' . esc_html($msg) . '</div>';
+    }
+
+    /**
+     * WebView Bridge REST endpoint — GET /autoa/v1/auth/webview-bridge
+     *
+     * Called by the React Native WebView as its initial URL.
+     * Validates uid + session_uuid against stored user_meta (autoa_session_uuid).
+     * On success: sets WP auth cookie and issues a 302 redirect to
+     *   /doctor-dashboard/?app_mode=1
+     * On failure: returns a plain HTML error page (403 status).
+     *
+     * Security:
+     *   - session_uuid is a server-generated UUID stored in user_meta.
+     *     It cannot be guessed without a valid prior login.
+     *   - uid + session_uuid form a two-factor validation (both must match).
+     *   - hash_equals() prevents timing attacks.
+     *   - Redirect destination is hardcoded server-side — no open redirect risk.
+     *   - Rate limiting is handled at the SiteGround/CDN layer.
+     */
+    public function register_webview_bridge_route() {
+        register_rest_route('autoa/v1', '/auth/webview-bridge', array(
+            'methods'             => 'GET',
+            'callback'            => array($this, 'handle_webview_bridge'),
+            'permission_callback' => '__return_true',
+            'args'                => array(
+                'uid' => array(
+                    'required'          => true,
+                    'validate_callback' => function($param) {
+                        return is_numeric($param) && intval($param) > 0;
+                    },
+                    'sanitize_callback' => 'absint',
+                ),
+                'session' => array(
+                    'required'          => true,
+                    'validate_callback' => function($param) {
+                        return is_string($param) && strlen($param) >= 32;
+                    },
+                    'sanitize_callback' => 'sanitize_text_field',
+                ),
+            ),
+        ));
+    }
+
+    public function handle_webview_bridge(WP_REST_Request $request) {
+        $uid          = (int) $request->get_param('uid');
+        $session_uuid = (string) $request->get_param('session');
+
+        // Validate user exists
+        $user = get_userdata($uid);
+        if (!$user) {
+            return $this->webview_bridge_error('invalid_user', 'Ο χρήστης δεν βρέθηκε.');
+        }
+
+        // Validate session_uuid matches stored value (timing-safe comparison)
+        $stored_uuid = get_user_meta($uid, 'autoa_session_uuid', true);
+        if (empty($stored_uuid) || !hash_equals((string) $stored_uuid, $session_uuid)) {
+            return $this->webview_bridge_error('invalid_session', 'Η συνεδρία δεν είναι έγκυρη. Αποσυνδέσου και συνδέσου ξανά.');
+        }
+
+        // Validate doctor/admin access using the same rule as the dashboard
+        if (!$this->user_can_doctor_access($uid)) {
+            return $this->webview_bridge_error('access_denied', 'Δεν έχεις πρόσβαση στο Doctor Dashboard.');
+        }
+
+        // All checks passed — set WordPress auth cookie
+        wp_set_auth_cookie($uid, true);
+
+        // Redirect to doctor dashboard in app-webview mode
+        $redirect_url = home_url('/doctor-dashboard/?app_mode=1');
+        header('Location: ' . esc_url_raw($redirect_url), true, 302);
+        exit;
+    }
+
+    private function webview_bridge_error($code, $message) {
+        status_header(403);
+        header('Content-Type: text/html; charset=utf-8');
+        echo '<!DOCTYPE html><html lang="el"><head><meta charset="utf-8">';
+        echo '<meta name="viewport" content="width=device-width,initial-scale=1">';
+        echo '<title>autoa-bridge-error</title>';
+        echo '<style>body{font-family:system-ui,-apple-system,sans-serif;display:flex;';
+        echo 'flex-direction:column;align-items:center;justify-content:center;';
+        echo 'min-height:100vh;margin:0;background:#fff;color:#111;padding:24px;text-align:center;}';
+        echo 'h2{font-size:18px;font-weight:700;margin-bottom:8px;color:#111827;}';
+        echo 'p{font-size:14px;color:#6b7280;line-height:1.5;}';
+        echo 'small{display:block;margin-top:16px;font-size:12px;color:#d1d5db;}</style>';
+        echo '</head><body>';
+        echo '<h2>Σφάλμα σύνδεσης</h2>';
+        echo '<p>' . esc_html($message) . '</p>';
+        echo '<small>' . esc_html($code) . '</small>';
+        echo '</body></html>';
+        exit;
     }
 
     private function user_can_doctor_access($user_id) {
