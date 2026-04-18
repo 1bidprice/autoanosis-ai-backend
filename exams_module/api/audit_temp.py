@@ -1,5 +1,6 @@
 """
-Temporary audit endpoint — to be removed after debugging.
+Admin audit and management endpoints for the Autoanosis Exams subsystem.
+Auth: X-Admin-Secret header must match AUTOA_AI_PROXY_SECRET env var.
 """
 import os
 import logging
@@ -11,10 +12,12 @@ from exams_module.models.exam_models import ExamDocument, ExamReport, ExamResult
 logger = logging.getLogger(__name__)
 audit_bp = Blueprint("audit", __name__, url_prefix="/exams/admin")
 
+
 def _require_admin():
     secret = os.environ.get("AUTOA_AI_PROXY_SECRET", "")
     provided = request.headers.get("X-Admin-Secret", "").strip()
     return bool(secret and provided and secret == provided)
+
 
 @audit_bp.route("/audit-patient/<int:patient_id>", methods=["GET"])
 def audit_patient(patient_id):
@@ -27,7 +30,7 @@ def audit_patient(patient_id):
         docs = db.query(ExamDocument).filter(
             ExamDocument.patient_id == patient_id
         ).order_by(ExamDocument.uploaded_at.desc()).all()
-        
+
         docs_out = []
         for d in docs:
             docs_out.append({
@@ -43,14 +46,14 @@ def audit_patient(patient_id):
                 "ocr_preview": (d.ocr_text or "")[:200],
                 "review_reason": d.review_reason,
             })
-        
+
         # 2. All reports for this patient
         reports = db.query(ExamReport).options(
             joinedload(ExamReport.results)
         ).filter(
             ExamReport.patient_id == patient_id
         ).order_by(ExamReport.created_at.desc()).all()
-        
+
         reports_out = []
         for r in reports:
             reports_out.append({
@@ -68,7 +71,7 @@ def audit_patient(patient_id):
                 "results_count": len(r.results),
                 "result_names": [x.display_name for x in r.results[:10]],
             })
-        
+
         # 3. Review queue
         reviews = db.query(ExamReviewQueue).filter(
             ExamReviewQueue.patient_id == patient_id
@@ -80,7 +83,7 @@ def audit_patient(patient_id):
             "reason_text": q.reason_text,
             "resolution_status": q.resolution_status,
         } for q in reviews]
-        
+
         return jsonify({
             "patient_id": patient_id,
             "documents_count": len(docs_out),
@@ -96,6 +99,7 @@ def audit_patient(patient_id):
     finally:
         db.close()
 
+
 @audit_bp.route("/audit-all", methods=["GET"])
 def audit_all():
     if not _require_admin():
@@ -106,19 +110,19 @@ def audit_all():
         doc_count = db.query(ExamDocument).count()
         report_count = db.query(ExamReport).count()
         result_count = db.query(ExamResult).count()
-        
+
         # Get all unique patients
         from sqlalchemy import distinct
         patients = db.query(distinct(ExamDocument.patient_id)).all()
         patient_ids = [p[0] for p in patients]
-        
+
         # Per-patient summary
         summaries = []
         for pid in patient_ids:
             d_count = db.query(ExamDocument).filter(ExamDocument.patient_id == pid).count()
             r_count = db.query(ExamReport).filter(ExamReport.patient_id == pid).count()
             summaries.append({"patient_id": pid, "documents": d_count, "reports": r_count})
-        
+
         return jsonify({
             "total_documents": doc_count,
             "total_reports": report_count,
@@ -126,6 +130,114 @@ def audit_all():
             "patients": summaries,
         }), 200
     except Exception as e:
+        return jsonify({"error": str(e)}), 500
+    finally:
+        db.close()
+
+
+@audit_bp.route("/delete-document/<document_id>", methods=["DELETE"])
+def delete_document(document_id):
+    """
+    Permanently delete a document and all its associated reports, results,
+    and review queue entries. Admin-only. Irreversible.
+
+    Body (JSON): { "confirm": true }  — required safety check
+    """
+    if not _require_admin():
+        return jsonify({"error": "unauthorized"}), 401
+
+    body = request.get_json(silent=True) or {}
+    if not body.get("confirm"):
+        return jsonify({"error": "missing_confirm", "message": "Send { \"confirm\": true } to confirm deletion"}), 400
+
+    gen = get_db()
+    db = next(gen)
+    try:
+        doc = db.query(ExamDocument).filter(ExamDocument.id == document_id).first()
+        if not doc:
+            return jsonify({"error": "not_found", "document_id": document_id}), 404
+
+        patient_id = doc.patient_id
+
+        # 1. Delete all ExamResults for all reports of this document
+        reports = db.query(ExamReport).filter(ExamReport.document_id == document_id).all()
+        report_ids = [r.id for r in reports]
+        results_deleted = 0
+        for rid in report_ids:
+            n = db.query(ExamResult).filter(ExamResult.report_id == rid).delete(synchronize_session=False)
+            results_deleted += n
+
+        # 2. Delete all ExamReports for this document
+        reports_deleted = db.query(ExamReport).filter(ExamReport.document_id == document_id).delete(synchronize_session=False)
+
+        # 3. Delete ExamReviewQueue entries for this document
+        queue_deleted = db.query(ExamReviewQueue).filter(ExamReviewQueue.document_id == document_id).delete(synchronize_session=False)
+
+        # 4. Delete the document itself
+        db.delete(doc)
+        db.commit()
+
+        logger.warning(
+            f"[AUDIT] DELETED document={document_id} patient={patient_id} "
+            f"reports={reports_deleted} results={results_deleted} queue={queue_deleted}"
+        )
+
+        return jsonify({
+            "deleted": True,
+            "document_id": document_id,
+            "patient_id": patient_id,
+            "reports_deleted": reports_deleted,
+            "results_deleted": results_deleted,
+            "queue_entries_deleted": queue_deleted,
+        }), 200
+
+    except Exception as e:
+        db.rollback()
+        logger.error(f"[AUDIT] Delete error for document {document_id}: {e}")
+        return jsonify({"error": str(e)}), 500
+    finally:
+        db.close()
+
+
+@audit_bp.route("/resolve-review/<review_id>", methods=["POST"])
+def resolve_review(review_id):
+    """
+    Mark a review queue entry as resolved (accepted or rejected).
+    Body (JSON): { "resolution": "accepted" | "rejected", "note": "optional" }
+    """
+    if not _require_admin():
+        return jsonify({"error": "unauthorized"}), 401
+
+    body = request.get_json(silent=True) or {}
+    resolution = body.get("resolution")
+    if resolution not in ("accepted", "rejected"):
+        return jsonify({"error": "invalid_resolution", "allowed": ["accepted", "rejected"]}), 400
+
+    gen = get_db()
+    db = next(gen)
+    try:
+        item = db.query(ExamReviewQueue).filter(ExamReviewQueue.id == review_id).first()
+        if not item:
+            return jsonify({"error": "not_found", "review_id": review_id}), 404
+
+        item.resolution_status = resolution
+        if body.get("note"):
+            item.reason_text = (item.reason_text or "") + f" | Admin note: {body['note']}"
+
+        # If accepted, mark the associated report as manually_corrected
+        if resolution == "accepted":
+            reports = db.query(ExamReport).filter(ExamReport.document_id == item.document_id).all()
+            for r in reports:
+                if r.normalization_status in ("needs_review", "low_confidence"):
+                    r.normalization_status = "manually_corrected"
+
+        db.commit()
+        logger.info(f"[AUDIT] Review {review_id} resolved as {resolution}")
+        return jsonify({"resolved": True, "review_id": review_id, "resolution": resolution}), 200
+
+    except Exception as e:
+        db.rollback()
+        logger.error(f"[AUDIT] Resolve error for review {review_id}: {e}")
         return jsonify({"error": str(e)}), 500
     finally:
         db.close()
