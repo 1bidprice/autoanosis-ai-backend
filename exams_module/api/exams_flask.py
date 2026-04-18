@@ -478,11 +478,35 @@ def get_patient_exam_snapshot(patient_id):
                     "normalization_status": r.normalization_status,
                 })
 
+        # Build report_summary: one entry per report, ordered by performed_at DESC.
+        # Anchor date is strictly performed_at (never created_at or upload date).
+        # This is ADDITIVE — structured_exam_results is preserved unchanged.
+        report_summary = []
+        for r in reports:
+            abnormal_flags = {"H", "L", "A", "HH", "LL", "CRITICAL"}
+            abnormal_count = sum(
+                1 for x in r.results
+                if x.abnormal_flag and x.abnormal_flag.upper() in abnormal_flags
+            )
+            report_summary.append({
+                "report_id": r.id,
+                "exam_type": r.exam_type or "Εξέταση",
+                "performed_at": r.performed_at.strftime("%Y-%m-%d") if r.performed_at else None,
+                "result_count": len(r.results),
+                "abnormal_count": abnormal_count,
+            })
+        # Sort by performed_at DESC (None values go last)
+        report_summary.sort(
+            key=lambda x: x["performed_at"] or "0000-00-00",
+            reverse=True
+        )
+
         return jsonify({
             "patient_id": patient_id,
             "structured_exam_results": structured_results,
             "report_count": len(reports),
             "result_count": len(structured_results),
+            "report_summary": report_summary,
         }), 200
     except Exception as e:
         logger.error(f"[EXAMS] get_patient_exam_snapshot error: {e}")

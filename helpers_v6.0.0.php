@@ -929,6 +929,11 @@ function autoa_rest_chat_proxy( WP_REST_Request $req ) {
             'user_id' => $user_id,
         );
         
+        // === TEMPORAL ANCHOR: Inject current Athens date/time as safety rail ===
+        // This ensures the AI always has a concrete reference point even if
+        // the backend clock differs. Athens TZ = Europe/Athens (UTC+2/+3 DST).
+        $snapshot['current_datetime_athens'] = ( new DateTime( 'now', new DateTimeZone( 'Europe/Athens' ) ) )->format( 'd/m/Y H:i' );
+        
         // Get user display name
         $user = get_userdata($user_id);
         if ($user) {
@@ -1042,6 +1047,10 @@ function autoa_rest_chat_proxy( WP_REST_Request $req ) {
         if ( !is_wp_error($structured_exams) && !empty($structured_exams['structured_exam_results']) ) {
             $snapshot['structured_exam_results'] = $structured_exams['structured_exam_results'];
             $snapshot['exam_report_count']       = $structured_exams['report_count'] ?? 0;
+            // Propagate report_summary (additive — never replaces structured_exam_results).
+            // Provides per-report temporal summary (performed_at, result_count, abnormal_count)
+            // so the AI can answer "how many exams" and "when was my last exam" correctly.
+            $snapshot['report_summary']          = $structured_exams['report_summary'] ?? [];
             // NOTE: $snapshot['test_results'] is intentionally NOT set here.
             // The backend's build_selective_context() will prefer structured_exam_results.
         } else {

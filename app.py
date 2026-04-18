@@ -30,6 +30,7 @@ import unicodedata
 import requests
 from collections import defaultdict
 from datetime import datetime
+from zoneinfo import ZoneInfo
 from flask import Flask, request, jsonify, send_file
 from flask_cors import CORS
 from openai import OpenAI
@@ -265,7 +266,12 @@ def build_selective_context(snap: dict, intent: str) -> str:
             snap["trend_summary"] = _daily["trend"]
     # ─────────────────────────────────────────────────────────────────────────
 
-    parts = []
+    # ── TEMPORAL ANCHOR: Current Athens date/time ──────────────────────────────
+    # Injected first so the AI always has a concrete reference point for
+    # relative date calculations ("πριν 4 μήνες", "σήμερα", "χθες").
+    now_athens = datetime.now(ZoneInfo("Europe/Athens")).strftime("%d/%m/%Y %H:%M")
+    parts = [f"ΤΡΕΧΟΥΣΑ ΗΜΕΡΟΜΗΝΙΑ/ΩΡΑ (Αθήνα): {now_athens}"]
+    # ─────────────────────────────────────────────────────────────────────────
 
     # 1. Profile
     name = snap.get("user_name")
@@ -323,9 +329,36 @@ def build_selective_context(snap: dict, intent: str) -> str:
             parts.append("2. ΦΑΡΜΑΚΑ:\n" + "\n".join(f"• {l}" for l in med_lines))
 
     # 3. Structured Exam Results
+    # Header uses report_summary (report-level, performed_at-sorted) when available.
+    # Individual results follow for detail. structured_exam_results is never removed.
+    report_summary = snap.get("report_summary") or []
     structured_results = snap.get("structured_exam_results") or snap.get("test_results") or []
+
+    exam_parts = []
+
+    if isinstance(report_summary, list) and report_summary:
+        # Build a temporal header: total reports + per-report summary line
+        # The most recent report is first (sorted by performed_at DESC in the backend)
+        total_reports = len(report_summary)
+        total_results = sum(r.get("result_count", 0) for r in report_summary)
+        total_abnormal = sum(r.get("abnormal_count", 0) for r in report_summary)
+        exam_parts.append(
+            f"ΣΥΝΟΛΟ: {total_reports} εξετάσεις (reports), {total_results} αποτελέσματα, "
+            f"{total_abnormal} εκτός ορίων"
+        )
+        for rep in report_summary:
+            p_at = rep.get("performed_at") or "άγνωστη ημερομηνία"
+            e_type = rep.get("exam_type") or "Εξέταση"
+            r_cnt = rep.get("result_count", 0)
+            a_cnt = rep.get("abnormal_count", 0)
+            abnormal_note = f", {a_cnt} εκτός ορίων" if a_cnt else ""
+            exam_parts.append(f"• {e_type} — {p_at} ({r_cnt} αποτελέσματα{abnormal_note})")
+
     if isinstance(structured_results, list) and structured_results:
-        res_lines = []
+        if not exam_parts:
+            # No report_summary available — fall back to flat list with header
+            exam_parts.append(f"ΣΥΝΟΛΟ: {len(structured_results)} αποτελέσματα")
+        exam_parts.append("ΑΝΑΛΥΤΙΚΑ ΑΠΟΤΕΛΕΣΜΑΤΑ:")
         for r in structured_results:
             if isinstance(r, dict):
                 date = r.get("test_date") or r.get("created_at") or ""
@@ -337,9 +370,10 @@ def build_selective_context(snap: dict, intent: str) -> str:
                 if status and status not in ("unknown", ""):
                     _st_gr = {"normal": "φυσιολογικό", "high": "υψηλό", "low": "χαμηλό", "critical": "κρίσιμο", "abnormal": "εκτός ορίων"}.get(status.lower(), status)
                     line += f" [{_st_gr}]"
-                res_lines.append(line)
-        if res_lines:
-            parts.append("3. ΕΞΕΤΑΣΕΙΣ:\n" + "\n".join(res_lines))
+                exam_parts.append(line)
+
+    if exam_parts:
+        parts.append("3. ΕΞΕΤΑΣΕΙΣ:\n" + "\n".join(exam_parts))
 
     # 4. BEST History
     best_history = snap.get("best_history") or []
@@ -636,6 +670,14 @@ HARD RULES / BANNED BEHAVIOR (ΑΠΟΛΥΤΩΣ ΥΠΟΧΡΕΩΤΙΚΟ):
 - ΑΠΑΓΟΡΕΥΕΤΑΙ να αρνείσαι full history όταν έχει ενεργοποιηθεί doctor_report.
 - ΑΠΑΓΟΡΕΥΕΤΑΙ να μπερδεύεις general education με patient-specific summary.
 - Αν κάποιο category λείπει από το context: παράλειψέ το σιωπηλά, ή γράψε "Δεν υπάρχει διαθέσιμο δεδομένο για την ενότητα Χ" στο doctor_report. Χωρίς filler φράσεις, χωρίς εξηγήσεις άμυνας.
+
+TEMPORAL AWARENESS RULES (ΑΥΣΤΗΡΩΣ ΥΠΟΧΡΕΩΤΙΚΟ):
+- Η τρέχουσα ημερομηνία/ώρα (Αθήνα) βρίσκεται ΠΑΝΤΑ στο context ως "ΤΡΕΧΟΥΣΑ ΗΜΕΡΟΜΗΝΙΑ/ΩΡΑ (Αθήνα)". Χρησιμοποίησέ την ως αποκλειστικό σημείο αναφοράς για κάθε χρονικό υπολογισμό.
+- Χρησιμοποίησε ΠΑΝΤΑ σχετικές ημερομηνίες στις απαντήσεις σου: π.χ. "πριν 4 μήνες", "χθες", "πριν 3 εβδομάδες". Μην αναφέρεις μόνο την ακριβή ημερομηνία χωρίς σχετικό χρόνο.
+- Για εξετάσεις: η «τελευταία εξέταση» είναι αυτή με το πιο πρόσφατο performed_at. Αναφέρσου σε αυτήν ως «τελευταία εξέταση» και υπολόγισε πόσο καιρό πριν έγινε.
+- Για ερωτήσεις πλήθους («πόσες εξετάσεις έχω;»): απαντάς με τον αριθμό REPORTS (αναφορών), όχι των μεμονωμένων αποτελεσμάτων. Ο αριθμός βρίσκεται στο «ΣΥΝΟΛΟ: X εξετάσεις (reports)» του context.
+- Για φάρμακα/δόσεις: αναφέρεσαι σε εκκρεμείς δόσεις με την ακριβή τους ώρα (π.χ. «η δόση των 20:00 φαίνεται εκκρεμής»). ΑΠΑΓΟΡΕΥΕΤΑΙ ο ψευδοϊατρικός τόνος — μην λες «έχεις παραλείψει επικίνδυνα τη θεραπεία σου» εκτός αν υπάρχει ρητός κανόνας στο context.
+- Αν δεν υπάρχει ασφαλές date anchor (performed_at = null/άγνωστη): δήλωσέ το καθαρά («δεν γνωρίζω την ακριβή ημερομηνία αυτής της εξέτασης»). ΑΠΑΓΟΡΕΥΕΤΑΙ να εφευρίσκεις ή να εκτιμάς χρόνο από αέρα.
 
 RELAPSE / FLARE SAFETY RULE:
 Για queries τύπου "έχω έξαρση;", "φαίνεται έξαρση;", "είναι relapse;", "επιδεινώνομαι;":
