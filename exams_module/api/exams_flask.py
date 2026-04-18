@@ -333,14 +333,26 @@ def get_patient_reports(patient_id):
             .all()
         )
 
+        # Map normalization_status → mobile-facing status field
+        _STATUS_MAP = {
+            "auto_verified":      "completed",
+            "manually_corrected": "completed",
+            "published":          "completed",
+            "needs_review":       "needs_review",
+            "rejected":           "rejected",
+        }
         out = []
         for r in reports:
+            mobile_status = _STATUS_MAP.get(r.normalization_status or "", "pending")
             out.append({
                 "id": r.id,
                 "patient_id": r.patient_id,
                 "exam_type": r.exam_type,
                 "exam_category": r.exam_category,
+                "status": mobile_status,
                 "normalization_status": r.normalization_status,
+                "result_count": len(r.results),
+                "abnormal_count": sum(1 for x in r.results if x.abnormal_flag in ("H", "L", "A", "HH", "LL", "CRITICAL")),
                 "confidence_score": float(r.confidence_score) if r.confidence_score else None,
                 "performed_at": r.performed_at.isoformat() if r.performed_at else None,
                 "lab_name": r.lab_name,
