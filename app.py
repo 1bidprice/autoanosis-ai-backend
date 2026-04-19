@@ -278,10 +278,16 @@ def build_selective_context(snap: dict, intent: str) -> str:
     cond = snap.get("autoimmune_type")
     diet = snap.get("diet_pref")
     health_info = snap.get("health_info")
-    
+    age = snap.get("age")
+    gender = snap.get("gender")
+
     prof_parts = []
     if name: prof_parts.append(f"Χρήστης: {name}")
     if cond: prof_parts.append(f"Πάθηση: {cond}")
+    if age is not None and str(age).strip():
+        prof_parts.append(f"Ηλικία: {age}")
+    if gender and str(gender).strip():
+        prof_parts.append(f"Φύλο: {gender}")
     if diet: prof_parts.append(f"Διατροφή: {diet}")
     if health_info and isinstance(health_info, str) and health_info.strip():
         prof_parts.append(f"Ιστορικό/Υγεία: {health_info.strip()}")
