@@ -93,14 +93,44 @@ def _review(db: Session, doc, code, reason):
 
 
 def _parse_date(date_str: str | None) -> datetime | None:
-    """Parse a date string (YYYY-MM-DD or DD/MM/YYYY) into a datetime object."""
+    """
+    Parse a date string into a datetime object.
+    Enforces strict rules to prevent silent data corruption (e.g., DD/MM vs MM/DD).
+    """
     if not date_str:
         return None
-    for fmt in ("%Y-%m-%d", "%d/%m/%Y", "%d-%m-%Y", "%Y/%m/%d"):
+    
+    date_str = date_str.strip()
+    
+    # 1. Try ISO formats first (canonical)
+    try:
+        return datetime.fromisoformat(date_str)
+    except ValueError:
+        pass
+        
+    # Also try just YYYY-MM-DD explicitly
+    try:
+        return datetime.strptime(date_str, "%Y-%m-%d")
+    except ValueError:
+        pass
+        
+    # 2. Check for ambiguous dates (DD/MM/YYYY vs MM/DD/YYYY)
+    # If both day and month could be <= 12, it's ambiguous and dangerous.
+    import re
+    slash_dash_match = re.match(r"^(\d{1,2})[/\-](\d{1,2})[/\-](\d{2,4})$", date_str)
+    if slash_dash_match:
+        p1, p2, p3 = slash_dash_match.groups()
+        if int(p1) <= 12 and int(p2) <= 12:
+            logger.warning(f"Ambiguous date detected and rejected: {date_str}")
+            return None # Force review rather than guessing wrong
+            
+    # 3. Try safe European formats (where first part > 12, so it MUST be DD)
+    for fmt in ("%d/%m/%Y", "%d-%m-%Y"):
         try:
-            return datetime.strptime(date_str.strip(), fmt)
+            return datetime.strptime(date_str, fmt)
         except ValueError:
             continue
+            
     return None
 
 

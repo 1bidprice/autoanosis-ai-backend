@@ -193,6 +193,7 @@ CRITICAL RULES:
 10. Handle Greek, English, or any language. Preserve original test names.
 11. For each extracted result, include the approximate OCR line or snippet where you found it (ocr_snippet field) for traceability.
 12. If you cannot confidently extract a value, still include the test with value_text containing what you see, and set parser_confidence to a lower value (0.3-0.6).
+13. exam_date must always be returned as ISO date: YYYY-MM-DD. Never return DD/MM/YYYY, MM/DD/YYYY, DD-MM-YYYY, or localized date strings. If the date is ambiguous or cannot be confidently normalized, return null.
 
 Respond with ONLY valid JSON matching this exact schema:
 {
