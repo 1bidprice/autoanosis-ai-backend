@@ -147,6 +147,7 @@ def process_ocr():
                 return jsonify({
                     "success": True,
                     "duplicate": True,
+                    "is_duplicate": True,
                     "document_id": doc.id,
                     "status": doc.status,
                     "message": "This file has already been uploaded and processed",
@@ -165,6 +166,7 @@ def process_ocr():
             return jsonify({
                 "success": True,
                 "duplicate": False,
+                "is_duplicate": False,
                 "document_id": doc.id,
                 "status": result.get("status"),
                 "normalization_status": result.get("normalization_status"),
