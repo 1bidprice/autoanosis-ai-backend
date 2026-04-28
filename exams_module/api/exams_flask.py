@@ -641,3 +641,92 @@ def resolve_review_queue_item(item_id):
         return jsonify({"error": "resolve_failed", "detail": str(e)}), 500
     finally:
         db.close()
+
+# ---------------------------------------------------------------------------
+# PATCH /exams/patients/<patient_id>/reports/<report_id>/deactivate
+# User-facing soft-delete: sets report.status = 'deleted'
+# Auth: X-Identity-Token (patient must own the report)
+# ---------------------------------------------------------------------------
+@exams_bp.route("/patients/<int:patient_id>/reports/<report_id>/deactivate", methods=["PATCH"])
+def deactivate_patient_report(patient_id, report_id):
+    """
+    Soft-delete a single exam report for the authenticated patient.
+    Sets report.status = 'deleted' — excluded from all future reports/snapshot queries.
+    The underlying document and results are preserved in the database.
+
+    Auth: X-Identity-Token header (uid must match patient_id).
+    Returns: { "deactivated": true, "report_id": "...", "patient_id": ... }
+    """
+    import os, hmac as _hmac, hashlib, time
+    token = request.headers.get("X-Identity-Token", "").strip()
+    proxy_sig = request.headers.get("X-Autoa-Proxy-Sig", "").strip()
+    authed_uid = None
+
+    if token:
+        try:
+            from identity import verify_identity_token
+            is_valid, payload, _ = verify_identity_token(token)
+            if is_valid:
+                authed_uid = payload.get("uid")
+        except Exception:
+            pass
+
+    if authed_uid is None and proxy_sig:
+        secret = os.environ.get("AUTOA_AI_PROXY_SECRET", "")
+        ts_str = request.headers.get("X-Autoa-Proxy-TS", "")
+        nonce = request.headers.get("X-Autoa-Proxy-Nonce", "")
+        if secret and ts_str and nonce:
+            try:
+                ts = int(ts_str)
+                if abs(int(time.time()) - ts) <= 300:
+                    canonical = f"{ts}.{nonce}.{patient_id}"
+                    expected = _hmac.new(
+                        secret.encode(), canonical.encode(), hashlib.sha256
+                    ).hexdigest()
+                    if _hmac.compare_digest(expected, proxy_sig):
+                        authed_uid = patient_id
+            except Exception:
+                pass
+
+    if authed_uid is None:
+        return jsonify({"error": "unauthorized"}), 401
+    if int(authed_uid) != patient_id:
+        return jsonify({"error": "forbidden"}), 403
+
+    db = _db_session()
+    try:
+        report = (
+            db.query(ExamReport)
+            .filter(
+                ExamReport.id == report_id,
+                ExamReport.patient_id == patient_id,
+            )
+            .first()
+        )
+        if not report:
+            return jsonify({"error": "not_found", "report_id": report_id}), 404
+        if report.status == "deleted":
+            return jsonify({
+                "deactivated": True,
+                "report_id": report_id,
+                "patient_id": patient_id,
+                "note": "already_deleted",
+            }), 200
+
+        report.status = "deleted"
+        db.commit()
+        logger.info(
+            "[EXAMS] Report soft-deleted: report_id=%s patient_id=%s",
+            report_id, patient_id,
+        )
+        return jsonify({
+            "deactivated": True,
+            "report_id": report_id,
+            "patient_id": patient_id,
+        }), 200
+    except Exception as e:
+        db.rollback()
+        logger.error(f"[EXAMS] deactivate_patient_report error: {e}")
+        return jsonify({"error": "deactivate_failed", "detail": str(e)}), 500
+    finally:
+        db.close()
