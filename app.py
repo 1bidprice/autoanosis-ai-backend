@@ -378,6 +378,48 @@ def build_selective_context(snap: dict, intent: str) -> str:
                     line += f" [{_st_gr}]"
                 exam_parts.append(line)
 
+    # 3b. Narrative / Imaging exam reports (ultrasound, MRI, CT, biopsy, etc.)
+    # These are NOT in structured_exam_results (no numeric values).
+    # They live in narrative_exam_context from the /snapshot endpoint.
+    narrative_ctx = snap.get("narrative_exam_context") or []
+    if isinstance(narrative_ctx, list) and narrative_ctx:
+        narrative_parts = []
+        for nr in narrative_ctx:
+            if not isinstance(nr, dict):
+                continue
+            n_date = nr.get("performed_at") or nr.get("exam_date") or ""
+            n_type = nr.get("display_name") or nr.get("exam_type_label") or nr.get("exam_type") or "Απεικονιστική Εξέταση"
+            n_summary = nr.get("summary") or ""
+            n_narrative = nr.get("narrative_text") or ""
+            n_findings = nr.get("findings") or []
+            block = [f"[{n_type}] {n_date}"]
+            if n_summary:
+                block.append(f"  Περίληψη: {n_summary}")
+            elif n_narrative:
+                trunc = n_narrative[:600] + ("..." if len(n_narrative) > 600 else "")
+                block.append(f"  Κείμενο: {trunc}")
+            if isinstance(n_findings, list) and n_findings:
+                for f_item in n_findings[:8]:
+                    if isinstance(f_item, dict):
+                        f_name = f_item.get("finding_name") or f_item.get("name") or ""
+                        f_val = f_item.get("value") or f_item.get("finding_value") or ""
+                        f_interp = f_item.get("interpretation") or ""
+                        if f_name:
+                            f_line = f"  • {f_name}"
+                            if f_val: f_line += f": {f_val}"
+                            if f_interp: f_line += f" ({f_interp})"
+                            block.append(f_line)
+                    elif isinstance(f_item, str) and f_item.strip():
+                        block.append(f"  • {f_item.strip()}")
+            narrative_parts.append("\n".join(block))
+        if narrative_parts:
+            if exam_parts:
+                exam_parts.append("ΑΠΕΙΚΟΝΙΣΤΙΚΕΣ / ΑΦΗΓΗΜΑΤΙΚΕΣ ΕΞΕΤΑΣΕΙΣ:")
+                exam_parts.extend(narrative_parts)
+            else:
+                exam_parts.append(f"ΑΠΕΙΚΟΝΙΣΤΙΚΕΣ ΕΞΕΤΑΣΕΙΣ ({len(narrative_parts)}):")
+                exam_parts.extend(narrative_parts)
+
     if exam_parts:
         parts.append("3. ΕΞΕΤΑΣΕΙΣ:\n" + "\n".join(exam_parts))
 
