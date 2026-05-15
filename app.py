@@ -1468,3 +1468,55 @@ def recalculate_abnormal_flags():
 
 if __name__ == "__main__":
     app.run(host="0.0.0.0", port=10000)
+
+@app.route('/admin/list-documents', methods=['GET'])
+def admin_list_documents():
+    """Debug: list all ExamDocuments for a patient."""
+    secret = request.headers.get('X-Admin-Secret', '')
+    admin_secret = os.environ.get('ADMIN_SECRET', 'autoanosis-admin-2026')
+    if secret != admin_secret:
+        return jsonify({"error": "Unauthorized"}), 401
+    patient_id = request.args.get('patient_id', type=int)
+    if not patient_id:
+        return jsonify({"error": "patient_id required"}), 400
+    try:
+        from exams_module.db.database import SessionLocal
+        from exams_module.models.exam_models import ExamDocument
+        db = SessionLocal()
+        docs = db.query(ExamDocument).filter(ExamDocument.patient_id == patient_id).order_by(ExamDocument.created_at.desc()).limit(20).all()
+        result = [{"id": d.id, "sha256": d.sha256[:16], "status": d.status, "created_at": str(d.created_at)} for d in docs]
+        db.close()
+        return jsonify({"documents": result, "count": len(result)})
+    except Exception as e:
+        return jsonify({"error": str(e)}), 500
+
+@app.route('/admin/clear-duplicate', methods=['POST'])
+def admin_clear_duplicate():
+    """Force-mark a document as deleted to allow re-upload."""
+    data = request.get_json(silent=True) or {}
+    secret = request.headers.get('X-Admin-Secret') or data.get('secret', '')
+    admin_secret = os.environ.get('ADMIN_SECRET', 'autoanosis-admin-2026')
+    if secret != admin_secret:
+        return jsonify({"error": "Unauthorized"}), 401
+    sha256 = data.get('sha256')
+    patient_id = data.get('patient_id')
+    if not sha256 or not patient_id:
+        return jsonify({"error": "sha256 and patient_id required"}), 400
+    try:
+        from exams_module.db.database import SessionLocal
+        from exams_module.models.exam_models import ExamDocument
+        db = SessionLocal()
+        docs = db.query(ExamDocument).filter(
+            ExamDocument.sha256 == sha256,
+            ExamDocument.patient_id == patient_id,
+            ExamDocument.status != 'deleted'
+        ).all()
+        updated = 0
+        for d in docs:
+            d.status = 'deleted'
+            updated += 1
+        db.commit()
+        db.close()
+        return jsonify({"updated": updated, "sha256": sha256[:16]})
+    except Exception as e:
+        return jsonify({"error": str(e)}), 500
