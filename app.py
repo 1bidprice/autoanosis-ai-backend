@@ -1520,3 +1520,53 @@ def admin_clear_duplicate():
         return jsonify({"updated": updated, "sha256": sha256[:16]})
     except Exception as e:
         return jsonify({"error": str(e)}), 500
+
+@app.route('/admin/fix-orphaned-documents', methods=['POST'])
+def fix_orphaned_documents():
+    """
+    Migration: find ExamDocuments where ALL linked ExamReports are deleted,
+    but the document itself is not marked as deleted.
+    Mark those documents as deleted so re-upload of the same file is allowed.
+    """
+    data = request.get_json(silent=True) or {}
+    secret = request.headers.get('X-Admin-Secret') or data.get('secret', '')
+    admin_secret = os.environ.get('ADMIN_SECRET', 'autoanosis-admin-2026')
+    if secret != admin_secret:
+        return jsonify({"error": "Unauthorized"}), 401
+    dry_run = data.get('dry_run', False)
+    try:
+        from exams_module.db.database import SessionLocal
+        from exams_module.models.exam_models import ExamDocument, ExamReport
+        from sqlalchemy import func
+        db = SessionLocal()
+        # Find documents that are NOT deleted but have ONLY deleted reports
+        # (i.e., no active/completed reports remain)
+        docs = db.query(ExamDocument).filter(ExamDocument.status != 'deleted').all()
+        updated = []
+        for doc in docs:
+            reports = db.query(ExamReport).filter(ExamReport.document_id == doc.id).all()
+            if not reports:
+                continue  # no reports at all — skip
+            all_deleted = all(r.status == 'deleted' for r in reports)
+            if all_deleted:
+                updated.append({
+                    "doc_id": doc.id,
+                    "sha256": doc.sha256[:16],
+                    "patient_id": doc.patient_id,
+                    "current_status": doc.status,
+                })
+                if not dry_run:
+                    doc.status = 'deleted'
+        if not dry_run:
+            db.commit()
+        db.close()
+        logger.info(f"[MIGRATION] fix-orphaned-documents: {len(updated)} docs {'would be' if dry_run else ''} updated")
+        return jsonify({
+            "status": "ok",
+            "dry_run": dry_run,
+            "updated_count": len(updated),
+            "documents": updated,
+        })
+    except Exception as e:
+        logger.error(f"[MIGRATION] fix-orphaned-documents error: {e}")
+        return jsonify({"error": str(e)}), 500
