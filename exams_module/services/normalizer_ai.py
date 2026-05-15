@@ -343,28 +343,35 @@ def _is_trendable(name: str) -> bool:
 
 
 def _validate_abnormal_flag(value: float | None, low: float | None, high: float | None, claimed_flag: str) -> Tuple[str, list]:
-    """Validate and correct the abnormal flag based on actual numeric comparison."""
+    """Validate and correct the abnormal flag based on actual numeric comparison.
+    Always returns short uppercase flags: H, L, N, or unknown.
+    """
     warnings = []
+    # Normalize any long-form flag to short form
+    _norm = {"low": "L", "high": "H", "normal": "N", "n": "N", "l": "L", "h": "H",
+             "hh": "HH", "ll": "LL", "critical": "CRITICAL"}
+    claimed_short = _norm.get((claimed_flag or "").lower(), claimed_flag or "unknown")
+
     if value is None:
-        return "unknown", warnings
+        return claimed_short if claimed_short != "unknown" else "unknown", warnings
 
     computed = "unknown"
     if low is not None and high is not None:
         if value < low:
-            computed = "low"
+            computed = "L"
         elif value > high:
-            computed = "high"
+            computed = "H"
         else:
-            computed = "normal"
+            computed = "N"
     elif low is not None:
-        computed = "low" if value < low else "normal"
+        computed = "L" if value < low else "N"
     elif high is not None:
-        computed = "high" if value > high else "normal"
+        computed = "H" if value > high else "N"
 
-    if computed != "unknown" and claimed_flag != "unknown" and computed != claimed_flag:
+    if computed != "unknown" and claimed_short not in ("unknown", computed):
         warnings.append(f"abnormal_flag_corrected: AI said '{claimed_flag}', computed '{computed}'")
 
-    return computed if computed != "unknown" else claimed_flag, warnings
+    return computed if computed != "unknown" else claimed_short, warnings
 
 
 def _detect_impossible_value(name: str, value: float | None) -> bool:

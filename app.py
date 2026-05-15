@@ -1426,5 +1426,45 @@ def generate_report():
         return jsonify({"error": f"Report generation failed: {str(e)[:200]}"}), 500
 
 
+@app.route('/admin/recalculate-abnormal-flags', methods=['POST'])
+def recalculate_abnormal_flags():
+    """One-time migration: recalculate H/L/N flags for all ExamResult records."""
+    data = request.get_json(silent=True) or {}
+    secret = request.headers.get('X-Admin-Secret') or data.get('secret', '')
+    admin_secret = os.environ.get('ADMIN_SECRET', 'autoanosis-admin-2026')
+    if secret != admin_secret:
+        return jsonify({"error": "Unauthorized"}), 401
+    try:
+        from exams_module.db.database import SessionLocal
+        from exams_module.models.exam_models import ExamResult
+        db = SessionLocal()
+        results = db.query(ExamResult).all()
+        updated = 0
+        skipped = 0
+        for r in results:
+            val = float(r.value_numeric) if r.value_numeric is not None else None
+            low = float(r.reference_low) if r.reference_low is not None else None
+            high = float(r.reference_high) if r.reference_high is not None else None
+            if val is None or (low is None and high is None):
+                skipped += 1
+                continue
+            if low is not None and high is not None:
+                new_flag = "L" if val < low else ("H" if val > high else "N")
+            elif low is not None:
+                new_flag = "L" if val < low else "N"
+            else:
+                new_flag = "H" if val > high else "N"
+            if r.abnormal_flag != new_flag:
+                r.abnormal_flag = new_flag
+                updated += 1
+        db.commit()
+        db.close()
+        logger.info(f"[MIGRATION] abnormal_flags: {updated} updated, {skipped} skipped")
+        return jsonify({"status": "ok", "updated": updated, "skipped": skipped})
+    except Exception as e:
+        logger.error(f"[MIGRATION] Error: {e}")
+        return jsonify({"error": str(e)}), 500
+
+
 if __name__ == "__main__":
     app.run(host="0.0.0.0", port=10000)
