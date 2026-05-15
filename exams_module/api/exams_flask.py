@@ -812,10 +812,16 @@ def deactivate_patient_report(patient_id, report_id):
             }), 200
 
         report.status = "deleted"
+        # Also mark the underlying document as deleted so the duplicate-check
+        # allows the patient to re-upload the same file after deletion.
+        if report.document_id:
+            doc = db.query(ExamDocument).filter(ExamDocument.id == report.document_id).first()
+            if doc:
+                doc.status = "deleted"
         db.commit()
         logger.info(
-            "[EXAMS] Report soft-deleted: report_id=%s patient_id=%s",
-            report_id, patient_id,
+            "[EXAMS] Report soft-deleted: report_id=%s patient_id=%s document_id=%s",
+            report_id, patient_id, report.document_id,
         )
         return jsonify({
             "deactivated": True,

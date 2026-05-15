@@ -44,13 +44,14 @@ def log_event(db: Session, document_id: str, event_type: str, payload=None):
 
 
 def create_document(db: Session, payload):
-    # Deduplication: sha256 + patient_id, skip only if prior non-failed record exists
+    # Deduplication: sha256 + patient_id, skip only if prior non-failed, non-deleted record exists
     existing = (
         db.query(ExamDocument)
         .filter(
             ExamDocument.sha256 == payload.sha256,
             ExamDocument.patient_id == payload.patient_id,
             ExamDocument.status != "failed",
+            ExamDocument.status != "deleted",
         )
         .first()
     )
