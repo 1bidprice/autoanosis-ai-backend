@@ -46,6 +46,8 @@ class ExamReport(Base):
     document_id = Column(String, ForeignKey("aa_exam_documents.id", ondelete="CASCADE"), nullable=False, index=True)
     exam_type = Column(String(64), nullable=False)
     exam_category = Column(String(32), nullable=False)
+    # Human-readable display name (e.g. "Υπερηχογράφημα Ανω/Κάτω Κοιλίας")
+    display_name = Column(Text)
     performed_at = Column(DateTime)
     reported_at = Column(DateTime)
     lab_name = Column(Text)
@@ -57,6 +59,18 @@ class ExamReport(Base):
     normalizer_version = Column(String(32), nullable=False, default="exams-master-package")
     parser_version = Column(String(32))
     source_lineage = Column(JSON, nullable=False, default=dict)
+    # ── Universal narrative / imaging fields ──
+    # Extracted narrative text from imaging/ultrasound/MRI/CT reports
+    narrative_text = Column(Text)
+    # AI-generated or manually edited summary
+    summary = Column(Text)
+    # Structured findings as JSON list [{"section": str, "text": str, "severity": str}]
+    findings_json = Column(JSON)
+    # ── Edit / correction audit trail ──
+    # Stores field-level corrections: {"field_name": {"original": ..., "corrected": ..., "edited_at": ...}}
+    corrected_fields = Column(JSON)
+    edited_by = Column(BigInteger)   # uid of user/doctor/admin who last edited
+    edited_at = Column(DateTime)
     created_at = Column(DateTime, server_default=func.now(), nullable=False)
     updated_at = Column(DateTime, server_default=func.now(), nullable=False)
     document = relationship("ExamDocument", back_populates="reports")

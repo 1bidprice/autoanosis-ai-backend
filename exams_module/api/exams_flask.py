@@ -344,11 +344,41 @@ def get_patient_reports(patient_id):
         out = []
         for r in reports:
             mobile_status = _STATUS_MAP.get(r.normalization_status or "", "pending")
+
+            # Determine report_category for mobile display logic:
+            # "numeric" = has numeric results (lab/urine)
+            # "narrative" = imaging/ultrasound/MRI/CT with text findings
+            # "mixed" = both numeric results AND narrative text
+            has_numeric = len(r.results) > 0
+            has_narrative = bool(r.narrative_text or r.findings_json)
+            if has_numeric and has_narrative:
+                report_category = "mixed"
+            elif has_narrative:
+                report_category = "narrative"
+            else:
+                report_category = "numeric"
+
+            # Build human-readable display_name
+            _DISPLAY_MAP = {
+                "imaging_report": "Απεικονιστική Εξέταση",
+                "ultrasound_report": "Υπερηχογράφημα",
+                "xray_report": "Ακτινογραφία",
+                "mri_report": "MRI / Μαγνητική Τομογραφία",
+                "ct_report": "CT / Αξονική Τομογραφία",
+                "lab_panel": "Αιματολογικές Εξετάσεις",
+                "urine": "Ανάλυση Ούρων",
+                "imaging": "Απεικονιστική Εξέταση",
+                "unknown": "Ιατρική Αναφορά",
+            }
+            display_name = r.display_name or _DISPLAY_MAP.get(r.exam_type, r.exam_type)
+
             out.append({
                 "id": r.id,
                 "patient_id": r.patient_id,
                 "exam_type": r.exam_type,
                 "exam_category": r.exam_category,
+                "display_name": display_name,
+                "report_category": report_category,
                 "status": mobile_status,
                 "normalization_status": r.normalization_status,
                 "result_count": len(r.results),
@@ -356,7 +386,17 @@ def get_patient_reports(patient_id):
                 "confidence_score": float(r.confidence_score) if r.confidence_score else None,
                 "performed_at": r.performed_at.isoformat() if r.performed_at else None,
                 "lab_name": r.lab_name,
+                "ordering_doctor": r.ordering_doctor,
+                # ── Narrative / imaging fields ──
+                "narrative_text": r.narrative_text,
+                "summary": r.summary,
+                "findings": r.findings_json or [],
+                # ── Edit audit trail ──
+                "corrected_fields": r.corrected_fields or {},
+                "edited_by": r.edited_by,
+                "edited_at": r.edited_at.isoformat() if r.edited_at else None,
                 "source_lineage": r.source_lineage or {},
+                # ── Numeric results (lab/urine) ──
                 "results": [
                     {
                         "display_name": x.display_name,
@@ -372,6 +412,7 @@ def get_patient_reports(patient_id):
                     }
                     for x in r.results
                 ],
+                # ── Raw impressions (for backward compat + doctor dashboard) ──
                 "impressions": [
                     {
                         "section_type": i.section_type,
@@ -481,22 +522,76 @@ def get_patient_exam_snapshot(patient_id):
         # Build report_summary: one entry per report, ordered by performed_at DESC.
         # Anchor date is strictly performed_at (never created_at or upload date).
         # This is ADDITIVE — structured_exam_results is preserved unchanged.
+        # v4: includes narrative_text, summary, findings for imaging reports.
+        _DISPLAY_MAP = {
+            "imaging_report": "Απεικονιστική Εξέταση",
+            "ultrasound_report": "Υπερηχογράφημα",
+            "xray_report": "Ακτινογραφία",
+            "mri_report": "MRI / Μαγνητική Τομογραφία",
+            "ct_report": "CT / Αξονική Τομογραφία",
+            "lab_panel": "Αιματολογικές Εξετάσεις",
+            "urine": "Ανάλυση Ούρων",
+            "imaging": "Απεικονιστική Εξέταση",
+            "unknown": "Ιατρική Αναφορά",
+        }
+
         report_summary = []
+        # Also build narrative_exam_context for AI: one entry per narrative/imaging report
+        narrative_exam_context = []
+
         for r in reports:
             abnormal_flags = {"H", "L", "A", "HH", "LL", "CRITICAL"}
             abnormal_count = sum(
                 1 for x in r.results
                 if x.abnormal_flag and x.abnormal_flag.upper() in abnormal_flags
             )
+            display_name = r.display_name or _DISPLAY_MAP.get(r.exam_type, r.exam_type)
+
             report_summary.append({
                 "report_id": r.id,
                 "exam_type": r.exam_type or "Εξέταση",
+                "display_name": display_name,
                 "performed_at": r.performed_at.strftime("%Y-%m-%d") if r.performed_at else None,
                 "result_count": len(r.results),
                 "abnormal_count": abnormal_count,
+                # Include summary for AI context (short version)
+                "summary": r.summary or None,
+                "has_narrative": bool(r.narrative_text or r.findings_json),
             })
+
+            # For imaging/narrative reports: add full narrative to AI context
+            if r.narrative_text or r.findings_json:
+                findings_text = ""
+                if r.findings_json:
+                    findings_parts = []
+                    for f in r.findings_json:
+                        section = f.get("section", "").title()
+                        text = f.get("text", "")
+                        if section and text:
+                            findings_parts.append(f"{section}: {text}")
+                        elif text:
+                            findings_parts.append(text)
+                    findings_text = "\n".join(findings_parts)
+
+                narrative_exam_context.append({
+                    "report_id": r.id,
+                    "exam_type": r.exam_type,
+                    "display_name": display_name,
+                    "performed_at": r.performed_at.strftime("%Y-%m-%d") if r.performed_at else None,
+                    "lab_name": r.lab_name,
+                    "ordering_doctor": r.ordering_doctor,
+                    # Full narrative for AI to read
+                    "narrative_text": r.narrative_text or findings_text or None,
+                    "summary": r.summary,
+                    "findings": r.findings_json or [],
+                })
+
         # Sort by performed_at DESC (None values go last)
         report_summary.sort(
+            key=lambda x: x["performed_at"] or "0000-00-00",
+            reverse=True
+        )
+        narrative_exam_context.sort(
             key=lambda x: x["performed_at"] or "0000-00-00",
             reverse=True
         )
@@ -507,6 +602,9 @@ def get_patient_exam_snapshot(patient_id):
             "report_count": len(reports),
             "result_count": len(structured_results),
             "report_summary": report_summary,
+            # NEW: narrative/imaging reports for AI context
+            "narrative_exam_context": narrative_exam_context,
+            "narrative_report_count": len(narrative_exam_context),
         }), 200
     except Exception as e:
         logger.error(f"[EXAMS] get_patient_exam_snapshot error: {e}")
@@ -728,5 +826,214 @@ def deactivate_patient_report(patient_id, report_id):
         db.rollback()
         logger.error(f"[EXAMS] deactivate_patient_report error: {e}")
         return jsonify({"error": "deactivate_failed", "detail": str(e)}), 500
+    finally:
+        db.close()
+
+
+# ---------------------------------------------------------------------------
+# PATCH /exams/patients/<patient_id>/reports/<report_id>
+# Universal report edit endpoint — user/doctor/admin can correct any field.
+# Original OCR/raw archive (ExamDocument.ocr_text) is NEVER modified.
+# All corrections are stored in corrected_fields with audit trail.
+# Auth: X-Identity-Token (patient must own the report)
+# ---------------------------------------------------------------------------
+
+_EDITABLE_FIELDS = {
+    "display_name", "exam_type", "exam_category", "performed_at",
+    "lab_name", "ordering_doctor", "narrative_text", "summary",
+    "findings_json",
+}
+
+_NUMERIC_RESULT_EDITABLE = {
+    "display_name", "value_numeric", "value_text", "unit",
+    "reference_low", "reference_high", "reference_text", "abnormal_flag",
+    "clinical_group",
+}
+
+
+@exams_bp.route("/patients/<int:patient_id>/reports/<report_id>", methods=["PATCH"])
+def patch_patient_report(patient_id, report_id):
+    """
+    Edit a report's fields with full audit trail.
+    Editable report fields: display_name, exam_type, exam_category, performed_at,
+      lab_name, ordering_doctor, narrative_text, summary, findings_json.
+    Editable numeric results: pass results[] array with {id, ...fields}.
+    All original values are preserved in corrected_fields JSON.
+
+    Body (JSON):
+    {
+      "display_name": "Υπερηχογράφημα Άνω/Κάτω Κοιλίας",
+      "exam_type": "ultrasound_report",
+      "performed_at": "2026-05-15",
+      "narrative_text": "...",
+      "summary": "...",
+      "findings_json": [...],
+      "results": [
+        {"id": "...", "value_numeric": 5.2, "unit": "mg/L", "abnormal_flag": "normal"}
+      ]
+    }
+    """
+    import os, hmac as _hmac, hashlib, time
+    from datetime import datetime as _dt
+
+    token = request.headers.get("X-Identity-Token", "").strip()
+    proxy_sig = request.headers.get("X-Autoa-Proxy-Sig", "").strip()
+    authed_uid = None
+
+    if token:
+        try:
+            from identity import verify_identity_token
+            is_valid, payload, _ = verify_identity_token(token)
+            if is_valid:
+                authed_uid = payload.get("uid")
+        except Exception:
+            pass
+
+    if authed_uid is None and proxy_sig:
+        secret = os.environ.get("AUTOA_AI_PROXY_SECRET", "")
+        ts_str = request.headers.get("X-Autoa-Proxy-TS", "")
+        nonce = request.headers.get("X-Autoa-Proxy-Nonce", "")
+        if secret and ts_str and nonce:
+            try:
+                ts = int(ts_str)
+                if abs(int(time.time()) - ts) <= 300:
+                    canonical = f"{ts}.{nonce}.{patient_id}"
+                    expected = _hmac.new(
+                        secret.encode(), canonical.encode(), hashlib.sha256
+                    ).hexdigest()
+                    if _hmac.compare_digest(expected, proxy_sig):
+                        authed_uid = patient_id
+            except Exception:
+                pass
+
+    if authed_uid is None:
+        return jsonify({"error": "unauthorized"}), 401
+    if int(authed_uid) != patient_id:
+        return jsonify({"error": "forbidden"}), 403
+
+    data = request.get_json(silent=True) or {}
+    if not data:
+        return jsonify({"error": "empty_body"}), 400
+
+    db = _db_session()
+    try:
+        from exams_module.models.exam_models import ExamResult as _ExamResult
+        report = (
+            db.query(ExamReport)
+            .options(joinedload(ExamReport.results))
+            .filter(
+                ExamReport.id == report_id,
+                ExamReport.patient_id == patient_id,
+                ExamReport.status != "deleted",
+            )
+            .first()
+        )
+        if not report:
+            return jsonify({"error": "not_found", "report_id": report_id}), 404
+
+        now_iso = _dt.utcnow().isoformat()
+        corrected = dict(report.corrected_fields or {})
+        changed_fields = []
+
+        # ── Edit report-level fields ──
+        for field in _EDITABLE_FIELDS:
+            if field not in data:
+                continue
+            new_val = data[field]
+            old_val = getattr(report, field, None)
+
+            # Special handling for performed_at
+            if field == "performed_at":
+                from exams_module.services.exam_service import _parse_date
+                new_val = _parse_date(str(new_val)) if new_val else None
+                old_val_str = old_val.isoformat() if old_val else None
+                new_val_str = new_val.isoformat() if new_val else None
+                if old_val_str != new_val_str:
+                    corrected[field] = {
+                        "original": old_val_str,
+                        "corrected": new_val_str,
+                        "edited_at": now_iso,
+                        "edited_by": authed_uid,
+                    }
+                    setattr(report, field, new_val)
+                    changed_fields.append(field)
+                continue
+
+            # Convert old_val for JSON serialisation
+            old_val_s = str(old_val) if old_val is not None else None
+            new_val_s = str(new_val) if new_val is not None else None
+
+            if old_val_s != new_val_s:
+                corrected[field] = {
+                    "original": old_val_s,
+                    "corrected": new_val_s,
+                    "edited_at": now_iso,
+                    "edited_by": authed_uid,
+                }
+                setattr(report, field, new_val)
+                changed_fields.append(field)
+
+        # ── Edit numeric results ──
+        results_edits = data.get("results", [])
+        for edit in results_edits:
+            result_id = edit.get("id")
+            if not result_id:
+                continue
+            result = next((x for x in report.results if x.id == result_id), None)
+            if not result:
+                continue
+            for rf in _NUMERIC_RESULT_EDITABLE:
+                if rf not in edit:
+                    continue
+                old_rv = getattr(result, rf, None)
+                new_rv = edit[rf]
+                old_rv_s = str(old_rv) if old_rv is not None else None
+                new_rv_s = str(new_rv) if new_rv is not None else None
+                if old_rv_s != new_rv_s:
+                    field_key = f"result_{result_id}_{rf}"
+                    corrected[field_key] = {
+                        "original": old_rv_s,
+                        "corrected": new_rv_s,
+                        "edited_at": now_iso,
+                        "edited_by": authed_uid,
+                    }
+                    from decimal import Decimal, InvalidOperation
+                    if rf in ("value_numeric", "reference_low", "reference_high"):
+                        try:
+                            setattr(result, rf, Decimal(str(new_rv)) if new_rv is not None else None)
+                        except (InvalidOperation, TypeError):
+                            setattr(result, rf, None)
+                    else:
+                        setattr(result, rf, new_rv)
+                    changed_fields.append(field_key)
+
+        if not changed_fields:
+            return jsonify({"updated": False, "message": "No changes detected"}), 200
+
+        # Persist audit trail
+        report.corrected_fields = corrected
+        report.edited_by = authed_uid
+        report.edited_at = _dt.utcnow()
+        report.updated_at = _dt.utcnow()
+        # Promote to manually_corrected so it passes through filters
+        if report.normalization_status == "needs_review":
+            report.normalization_status = "manually_corrected"
+
+        db.commit()
+        logger.info(
+            "[EXAMS] Report edited: report_id=%s patient_id=%s fields=%s",
+            report_id, patient_id, changed_fields,
+        )
+        return jsonify({
+            "updated": True,
+            "report_id": report_id,
+            "changed_fields": changed_fields,
+            "edited_at": now_iso,
+        }), 200
+
+    except Exception as e:
+        db.rollback()
+        logger.error(f"[EXAMS] patch_patient_report error: {e}")
+        return jsonify({"error": "edit_failed", "detail": str(e)}), 500
     finally:
         db.close()

@@ -171,12 +171,72 @@ def process_document(db: Session, doc):
             "report_ids": [],
         }
 
-    # Step 3: Create ExamReport with full metadata
+    # Step 3: Build narrative_text and findings_json from impressions
+    # For imaging/narrative reports, consolidate all impression text into narrative_text
+    # and build a structured findings_json list.
+    narrative_text = None
+    findings_json = None
+    summary = None
+
+    if parsed.impressions:
+        # Build findings_json: structured list of {section, text, severity}
+        findings_json = [
+            {
+                "section": imp.section_type,
+                "text": imp.text,
+                "severity": getattr(imp, "severity_flag", "unknown"),
+                "review_required": getattr(imp, "review_required", False),
+            }
+            for imp in parsed.impressions
+        ]
+
+        # Build narrative_text: full concatenated text for display
+        narrative_parts = []
+        for imp in parsed.impressions:
+            section_label = {
+                "narrative": "Συνολική Αναφορά",
+                "findings": "Ευρήματα",
+                "impression": "Εντύπωση",
+                "conclusion": "Συμπέρασμα",
+                "recommendation": "Σύσταση",
+                "ευρήματα": "Ευρήματα",
+                "εντύπωση": "Εντύπωση",
+                "πόρισμα": "Πόρισμα",
+                "συμπέρασμα": "Συμπέρασμα",
+            }.get(imp.section_type.lower(), imp.section_type.title())
+            narrative_parts.append(f"{section_label}:\n{imp.text}")
+
+        narrative_text = "\n\n".join(narrative_parts) if narrative_parts else None
+
+        # Summary: first non-narrative impression or first 300 chars of narrative
+        non_narrative = [i for i in parsed.impressions if i.section_type != "narrative"]
+        if non_narrative:
+            summary = non_narrative[0].text[:500]
+        elif narrative_text:
+            summary = narrative_text[:300]
+
+    # Build display_name from parsed metadata or exam_type
+    display_name = getattr(parsed, "display_name", None)
+    if not display_name:
+        _DISPLAY_MAP = {
+            "imaging_report": "Απεικονιστική Εξέταση",
+            "ultrasound_report": "Υπερηχογράφημα",
+            "xray_report": "Ακτινογραφία",
+            "mri_report": "MRI / Μαγνητική Τομογραφία",
+            "ct_report": "CT / Αξονική Τομογραφία",
+            "lab_panel": "Αιματολογικές Εξετάσεις",
+            "urine": "Ανάλυση Ούρων",
+            "imaging": "Απεικονιστική Εξέταση",
+        }
+        display_name = _DISPLAY_MAP.get(parsed.exam_type, None)
+
+    # Step 4: Create ExamReport with full metadata
     report = ExamReport(
         patient_id=doc.patient_id,
         document_id=doc.id,
         exam_type=parsed.exam_type,
         exam_category=parsed.exam_category,
+        display_name=display_name,
         normalization_status=parsed.normalization_status,
         confidence_score=_safe_decimal(parsed.confidence_score),
         source_lineage=parsed.source_lineage,
@@ -184,6 +244,9 @@ def process_document(db: Session, doc):
         performed_at=_parse_date(getattr(parsed, "performed_at", None)),
         lab_name=getattr(parsed, "lab_name", None),
         ordering_doctor=getattr(parsed, "ordering_doctor", None),
+        narrative_text=narrative_text,
+        summary=summary,
+        findings_json=findings_json,
         status="active",
     )
     db.add(report)
