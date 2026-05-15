@@ -401,16 +401,25 @@ def build_selective_context(snap: dict, intent: str) -> str:
             if isinstance(n_findings, list) and n_findings:
                 for f_item in n_findings[:8]:
                     if isinstance(f_item, dict):
-                        f_name = f_item.get("finding_name") or f_item.get("name") or ""
-                        f_val = f_item.get("value") or f_item.get("finding_value") or ""
+                        # Support both key schemas:
+                        # snapshot returns: {section, text} (from findings_json)
+                        # legacy may have: {finding_name, value, interpretation}
+                        f_name = (f_item.get("section") or f_item.get("finding_name")
+                                  or f_item.get("name") or "")
+                        f_val  = (f_item.get("text") or f_item.get("value")
+                                  or f_item.get("finding_value") or "")
                         f_interp = f_item.get("interpretation") or ""
-                        if f_name:
-                            f_line = f"  • {f_name}"
-                            if f_val: f_line += f": {f_val}"
+                        if f_name or f_val:
+                            if f_name and f_val:
+                                f_line = f"  \u2022 {f_name}: {f_val}"
+                            elif f_val:
+                                f_line = f"  \u2022 {f_val}"
+                            else:
+                                f_line = f"  \u2022 {f_name}"
                             if f_interp: f_line += f" ({f_interp})"
                             block.append(f_line)
                     elif isinstance(f_item, str) and f_item.strip():
-                        block.append(f"  • {f_item.strip()}")
+                        block.append(f"  \u2022 {f_item.strip()}")
             narrative_parts.append("\n".join(block))
         if narrative_parts:
             if exam_parts:
