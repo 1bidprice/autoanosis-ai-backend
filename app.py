@@ -3,6 +3,12 @@ Professional Flask backend — Medical Context Orchestration Engine
 Deployed on Render.com
 
 Changelog:
+v6.1.0 (2026-05-16) - Production Safety Patch: AI Longitudinal Exam Comparison
+  - Request idempotency: duplicate submissions within 10s blocked server-side
+  - pattern_detection: mandatory ΠΕΡΙΟΔΟΣ ΑΝΑΛΥΣΗΣ header (date range + exam count + indicator count)
+  - Strict temporal calculation: relative phrases ("πριν X μήνες") only from exact performed_at diff
+  - Medical-safe phrasing rules: CRP/HGB/PLT/Cortisol — no diagnosis language
+  - Insufficient data guard: <2 exams → "Δεν υπάρχουν αρκετά δεδομένα για σύγκριση"
 v6.0.0 (2026-03-08) - MAJOR: Medical Context Orchestration Engine
   - Smart Context Router: intent detection → selective context loading
   - Medical Report Generator: /generate-report endpoint with chunked AI analysis
@@ -112,6 +118,36 @@ def check_rate_limit(identifier: str) -> bool:
         return False
     rate_limit_storage[identifier].append(now)
     return True
+
+# ---------------------------------------------------------------------------
+# Request idempotency cache — prevents duplicate submissions within 10s
+# ---------------------------------------------------------------------------
+_idempotency_cache: dict[str, tuple[float, dict]] = {}  # key -> (timestamp, response)
+_IDEMPOTENCY_WINDOW = 10  # seconds
+
+def _idempotency_key(user_id, message: str) -> str:
+    """Hash of user_id + message for dedup within window."""
+    raw = f"{user_id}::{message.strip().lower()}"
+    return hashlib.sha256(raw.encode("utf-8")).hexdigest()[:32]
+
+def _check_idempotency(user_id, message: str) -> dict | None:
+    """Return cached response if same request was made within window."""
+    key = _idempotency_key(user_id, message)
+    now = time.time()
+    # Purge stale entries
+    stale = [k for k, (ts, _) in _idempotency_cache.items() if now - ts > _IDEMPOTENCY_WINDOW]
+    for k in stale:
+        del _idempotency_cache[k]
+    if key in _idempotency_cache:
+        ts, cached = _idempotency_cache[key]
+        if now - ts <= _IDEMPOTENCY_WINDOW:
+            logger.info(f"[IDEMPOTENCY] Duplicate request blocked for user={user_id}")
+            return cached
+    return None
+
+def _store_idempotency(user_id, message: str, response: dict):
+    key = _idempotency_key(user_id, message)
+    _idempotency_cache[key] = (time.time(), response)
 
 # ---------------------------------------------------------------------------
 # Conversation memory (in-memory)
@@ -691,19 +727,42 @@ def build_system_prompt(snapshot: str, intent: str) -> str:
 ΑΠΑΓΟΡΕΥΕΤΑΙ να δώσεις οδηγίες πλοήγησης αντί για ανάλυση.
 ΑΝ ο χρήστης ζητά σύγκριση ή ιστορικό εξετάσεων: παρουσίασε τις εξετάσεις χρονολογικά με τα αποτελέσματα και επισήμανε τι άλλαξε.
 
-Σταθερή δομή απάντησης (max 200 λέξεις):
+ΑΝΑΛΥΣΗ ΠΕΡΙΟΔΟΥ — ΑΥΣΤΗΡΩΣ ΥΠΟΧΡΕΩΤΙΚΟ:
+- Στην αρχή της απάντησης δήλωσε ΠΑΝΤΑ: από ποια ημερομηνία έως ποια ημερομηνία καλύπτουν τα δεδομένα, και πόσες εξετάσεις (reports) συγκρίθηκαν.
+  Παράδειγμα: "Ανάλυση περιόδου: 21/12/2023 — 22/12/2023 | 2 εξετάσεις | 7 δείκτες"
+- Αν υπάρχει μόνο 1 εξέταση ή λιγότερα από 2 σημεία δεδομένων για έναν δείκτη: ΑΠΑΓΟΡΕΥΕΤΑΙ να μιλάς για "τάση" ή "πορεία". Γράψε: "Δεν υπάρχουν αρκετά δεδομένα για σύγκριση — χρειάζεται τουλάχιστον 2 εξετάσεις."
+
+ΧΡΟΝΙΚΕΣ ΦΡΑΣΕΙΣ — ΑΥΣΤΗΡΩΣ ΥΠΟΧΡΕΩΤΙΚΟ:
+- ΑΠΑΓΟΡΕΥΕΤΑΙ να γράψεις "πριν από X μήνες" ή οποιαδήποτε σχετική χρονική φράση εκτός αν υπολογίζεται ΑΠΟΚΛΕΙΣΤΙΚΑ από τη διαφορά μεταξύ της ακριβούς ημερομηνίας της εξέτασης (performed_at) και της ΤΡΕΧΟΥΣΑΣ ΗΜΕΡΟΜΗΝΙΑΣ/ΩΡΑΣ (Αθήνα) που βρίσκεται στο context.
+- Αν η διαφορά είναι π.χ. 17 μήνες, γράψε "πριν από 17 μήνες" — όχι "πριν από 4 μήνες".
+- Αν δεν υπάρχει performed_at: γράψε μόνο την ακριβή ημερομηνία, χωρίς σχετικό χρόνο.
+
+MEDICAL-SAFE PHRASING — ΑΥΣΤΗΡΩΣ ΥΠΟΧΡΕΩΤΙΚΟ:
+- ΑΠΑΓΟΡΕΥΕΤΑΙ να γράψεις "υποδεικνύει φλεγμονή", "δείχνει αναιμία" ή οποιοδήποτε συμπέρασμα διάγνωσης.
+- Αντί αυτού χρησιμοποίησε ΠΑΝΤΑ:
+  * CRP: "Η τιμή X mg/dL είναι εκτός του φυσιολογικού ορίου (<0.5 mg/dL) και είναι συμβατή με φλεγμονώδη/λοιμώδη διεργασία — απαιτεί συσχέτιση με συμπτώματα και αξιολόγηση από γιατρό."
+  * Αιμοσφαιρίνη: "Η τιμή X g/dL μπορεί να είναι χαμηλή ανάλογα με το φύλο, την ηλικία και τα reference ranges του εργαστηρίου — χρειάζεται κλινική αξιολόγηση."
+  * Αιμοπετάλια: "Η τιμή X x10³/μL είναι εκτός του συνήθους εύρους (150-400 x10³/μL) — χρειάζεται παρακολούθηση από γιατρό."
+  * Κορτιζόλη: "Η τιμή X nmol/L βρίσκεται εκτός του τυπικού εύρους — η ερμηνεία εξαρτάται από την ώρα δειγματοληψίας και τη μέθοδο του εργαστηρίου."
+  * Για ΚΑΘΕ δείκτη εκτός ορίων: πρόσθεσε πάντα "χρειάζεται αξιολόγηση από γιατρό".
+- ΑΠΑΓΟΡΕΥΕΤΑΙ να βγάζεις κλινική διάγνωση ή να λες "έχεις" κάποια πάθηση.
+
+Σταθερή δομή απάντησης (max 250 λέξεις):
+
+ΠΕΡΙΟΔΟΣ ΑΝΑΛΥΣΗΣ:
+[Ημερομηνία από — έως | X εξετάσεις | Y δείκτες συγκρίθηκαν]
 
 ΤΑΣΗ / ΠΟΡΕΙΑ:
-[Χρονολογική σύγκριση των διαθέσιμων δεδομένων. Αν υπάρχουν εξετάσεις: παρουσίασέ τες με ημερομηνίες. Αν υπάρχουν check-ins: δείξε τάση.]
+[Χρονολογική σύγκριση. Αν <2 εξετάσεις: "Δεν υπάρχουν αρκετά δεδομένα για σύγκριση."]
 
 ΤΙ ΑΛΛΑΞΕ:
-[max 3 bullets — αξιοσημείωτες αλλαγές, βελτιώσεις, επιδεινώσεις]
+[max 3 bullets — αξιοσημείωτες αλλαγές με medical-safe phrasing]
 
 ΤΙ ΘΕΛΕΙ ΠΑΡΑΚΟΛΟΥΘΗΣΗ:
-[max 2 bullets — αν υπάρχει κάτι εκτός ορίων ή αξιοσημείωτο]
+[max 2 bullets — δείκτες εκτός ορίων, με αναφορά στον γιατρό]
 
 ΠΕΡΙΟΡΙΣΜΟΣ:
-[1 γραμμή — π.χ. "Για οριστική αξιολόγηση, συμβουλέψου τον γιατρό σου."]
+["Για οριστική αξιολόγηση, συμβουλέψου τον γιατρό σου."]
 """,
         "doctor_report": """
 ΑΥΤΟ ΕΙΝΑΙ DOCTOR REPORT MODE.
@@ -1309,6 +1368,11 @@ def chat():
     if not check_rate_limit(f"user_{user_id}"):
         return jsonify({"error": "Rate limit exceeded. Please try again later."}), 429
 
+    # --- Idempotency: block duplicate submissions within 10s ---
+    cached_response = _check_idempotency(user_id, user_message)
+    if cached_response is not None:
+        return jsonify(cached_response)
+
     # --- Conversation ID ---
     conversation_id = data.get("conversation_id")
     if not conversation_id:
@@ -1370,11 +1434,14 @@ def chat():
 
         logger.info(f"[CHAT] user={user_id} conv={conversation_id} intent={intent}")
 
-        return jsonify({
+        response_payload = {
             "reply": ai_response,
             "conversation_id": conversation_id,
-            "intent": intent  # For debugging
-        })
+            "intent": intent
+        }
+        # Cache for idempotency (blocks duplicate sends within 10s)
+        _store_idempotency(user_id, user_message, response_payload)
+        return jsonify(response_payload)
 
     except Exception as e:
         logger.error(f"[OPENAI] error: {e}")
