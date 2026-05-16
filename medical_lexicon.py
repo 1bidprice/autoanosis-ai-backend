@@ -43,6 +43,12 @@ GREEK_RULES: list[LexiconRule] = [
     # =========================================================================
 
     # Gallbladder - ΧΟΛΗΔΟΧΟΣ ΚΥΣΤΗ
+    # OCR Η→Ι confusion: ΧΟΛΙΔΟΧΟΣ seen in production (2026-05-16)
+    LexiconRule(r'\bΧΟΛΙΔΟΧΟΣ\s+ΚΥΣΤΗΣ?\b', 'ΧΟΛΗΔΟΧΟΣ ΚΥΣΤΗ', 'gallbladder_caps_iota', 'high', 'el'),
+    LexiconRule(r'\bΧΟΛΙΔΟΧΟΣ\b', 'ΧΟΛΗΔΟΧΟΣ', 'gallbladder_caps_iota_standalone', 'high', 'el'),
+    LexiconRule(r'\bΧολιδόχος\s+κύστη\b', 'Χοληδόχος κύστη', 'gallbladder_iota_mixed', 'high', 'el'),
+    LexiconRule(r'\bΧολιδόχος\s+πόρος\b', 'Χοληδόχος πόρος', 'bile_duct_iota_mixed', 'high', 'el'),
+    LexiconRule(r'\bΧΟΛΙΔΟΧΟΣ\s+ΠΟΡΟΣ\b', 'ΧΟΛΗΔΟΧΟΣ ΠΟΡΟΣ', 'bile_duct_caps_iota', 'high', 'el'),
     LexiconRule(r'\bΧΟΛΑΔΟΣΟΣ\s+ΚΥΣΤΗΣ?\b', 'ΧΟΛΗΔΟΧΟΣ ΚΥΣΤΗ', 'gallbladder_caps', 'high', 'el'),
     LexiconRule(r'\bΧΟΛΑΔΟΣ\s+ΚΥΣΤΗΣ?\b', 'ΧΟΛΗΔΟΧΟΣ ΚΥΣΤΗ', 'gallbladder_caps', 'high', 'el'),
     LexiconRule(r'\bΧΟΛΑΔΟΧΟΣ\s+ΚΥΣΤΗΣ?\b', 'ΧΟΛΗΔΟΧΟΣ ΚΥΣΤΗ', 'gallbladder_caps', 'high', 'el'),
