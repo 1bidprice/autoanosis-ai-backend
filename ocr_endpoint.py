@@ -135,6 +135,24 @@ def process_ocr():
             "message": "No text could be extracted from the file",
         }), 422
 
+    # --- Deterministic Medical Lexicon Correction ---
+    try:
+        from medical_lexicon import apply_lexicon_corrections
+        lex_result = apply_lexicon_corrections(raw_text.strip())
+        corrected_text = lex_result.corrected
+        if lex_result.correction_count > 0:
+            logger.info(
+                "[LEXICON] Applied %d corrections for uid=%s: %s",
+                lex_result.correction_count, uid,
+                [(c["original"], c["replacement"]) for c in lex_result.corrections],
+            )
+        if lex_result.needs_review:
+            logger.warning("[LEXICON] Suspicious patterns remain after correction for uid=%s", uid)
+            ocr_confidence = "low"
+    except Exception as lex_err:
+        logger.warning("[LEXICON] Correction layer failed (using raw OCR text): %s", lex_err)
+        corrected_text = raw_text.strip()
+
     # --- Ingest pipeline ---
     try:
         from exams_module.db.database import get_db
@@ -144,7 +162,7 @@ def process_ocr():
         payload = DocumentCreate(
             patient_id=uid,
             sha256=file_sha256,
-            raw_text=raw_text.strip(),
+            raw_text=corrected_text,
             ingestion_source=ingestion_source,
             ocr_model_version=OCR_MODEL_VERSION,
         )
