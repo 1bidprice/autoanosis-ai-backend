@@ -220,12 +220,14 @@ def process_ocr():
 # Image quality thresholds
 # ---------------------------------------------------------------------------
 
-# Minimum resolution: images below this are likely too blurry for gpt-4o-mini
-MIN_PIXELS_FOR_MINI = 400 * 400   # 160,000 px (~400x400)
+# Minimum resolution: images below this are too small for gpt-4o-mini
+# Phone photos are typically 3000x4000+ so this mainly catches thumbnails
+MIN_PIXELS_FOR_MINI = 1200 * 1600   # 1,920,000 px (~1200x1600 = typical scan quality)
 
-# Edge variance threshold: below this = blurry image
-# Sharp medical document photo: >200. Blurry/low-light: <80
-BLUR_THRESHOLD = 80.0
+# Edge variance threshold: below this = blurry/phone-photo quality
+# Sharp digital scan: >500. Phone photo of paper: 80-300. Blurry: <80
+# We set this high (300) so phone photos of paper documents go to gpt-4o
+BLUR_THRESHOLD = 300.0
 
 
 def _assess_image_quality(image_bytes: bytes) -> tuple:
