@@ -21,7 +21,7 @@ from openai import OpenAI
 
 logger = logging.getLogger(__name__)
 
-OCR_MODEL_VERSION = "hybrid-v3.0"
+OCR_MODEL_VERSION = "hybrid-v3.1"
 NORMALIZER_VERSION = "v3"
 
 ocr_bp = Blueprint("ocr", __name__)
@@ -216,39 +216,114 @@ def process_ocr():
 # Hybrid OCR Safety Pipeline
 # ---------------------------------------------------------------------------
 
-def _ocr_image_hybrid(image_bytes: bytes, content_type: str) -> tuple[str, str]:
+# ---------------------------------------------------------------------------
+# Image quality thresholds
+# ---------------------------------------------------------------------------
+
+# Minimum resolution: images below this are likely too blurry for gpt-4o-mini
+MIN_PIXELS_FOR_MINI = 400 * 400   # 160,000 px (~400x400)
+
+# Edge variance threshold: below this = blurry image
+# Sharp medical document photo: >200. Blurry/low-light: <80
+BLUR_THRESHOLD = 80.0
+
+
+def _assess_image_quality(image_bytes: bytes) -> tuple:
+    """
+    Assess image quality using Pillow (zero AI cost).
+    Returns (quality: 'good' | 'poor', metrics: dict)
+
+    Checks:
+    1. Resolution - images below MIN_PIXELS_FOR_MINI are too small
+    2. Blur (edge variance) - low variance = blurry
+    """
+    try:
+        from PIL import Image, ImageFilter
+
+        img = Image.open(io.BytesIO(image_bytes))
+        width, height = img.size
+        total_pixels = width * height
+
+        # Convert to grayscale for blur detection
+        gray = img.convert("L")
+
+        # Approximate Laplacian variance using PIL FIND_EDGES filter
+        edges = gray.filter(ImageFilter.FIND_EDGES)
+        pixels = list(edges.getdata())
+        n = len(pixels)
+        if n > 0:
+            mean = sum(pixels) / n
+            variance = sum((p - mean) ** 2 for p in pixels) / n
+        else:
+            variance = 0.0
+
+        metrics = {
+            "width": width,
+            "height": height,
+            "total_pixels": total_pixels,
+            "blur_variance": round(variance, 2),
+        }
+
+        if total_pixels < MIN_PIXELS_FOR_MINI:
+            logger.info("[OCR] Quality: POOR (low-res %dx%d = %d px)", width, height, total_pixels)
+            return "poor", {**metrics, "reason": "low_resolution"}
+
+        if variance < BLUR_THRESHOLD:
+            logger.info("[OCR] Quality: POOR (blurry, variance=%.1f < %.1f)", variance, BLUR_THRESHOLD)
+            return "poor", {**metrics, "reason": "blurry"}
+
+        logger.info("[OCR] Quality: GOOD (%dx%d, blur_var=%.1f)", width, height, variance)
+        return "good", {**metrics, "reason": "ok"}
+
+    except Exception as e:
+        logger.warning("[OCR] Quality assessment failed: %s - assuming good quality", e)
+        return "good", {"reason": "assessment_failed", "error": str(e)}
+
+
+def _ocr_image_hybrid(image_bytes: bytes, content_type: str) -> tuple:
     """
     Hybrid OCR pipeline:
-    1. Pass 1: Strict verbatim transcription with gpt-4o-mini
-    2. Pass 2: Verification — detect high-risk medical OCR errors
+    0. Pass 0: Image quality assessment (Pillow, zero AI cost)
+               -> Poor quality images go directly to gpt-4o (skip gpt-4o-mini)
+    1. Pass 1: Strict verbatim transcription with gpt-4o-mini (good quality only)
+    2. Pass 2: Verification - detect high-risk medical OCR errors
     3. Pass 3: Escalate to gpt-4o ONLY if risk detected or confidence low
 
     Returns (text, confidence) where confidence is "high" | "medium" | "low"
     """
-    # Pass 1: Strict verbatim transcription (cheap)
+    # Pass 0: Image quality assessment (zero cost)
+    quality, quality_metrics = _assess_image_quality(image_bytes)
+
+    if quality == "poor":
+        reason = quality_metrics.get("reason", "unknown")
+        logger.info("[OCR] Pass 0: Poor quality (%s) - using gpt-4o directly", reason)
+        text_4o = _ocr_strict_verbatim(image_bytes, content_type, model="gpt-4o")
+        if text_4o:
+            return text_4o, "medium"  # medium: image quality was poor
+        return "", "low"
+
+    # Pass 1: Strict verbatim transcription (cheap, good quality images only)
     text_mini = _ocr_strict_verbatim(image_bytes, content_type, model="gpt-4o-mini")
 
     if not text_mini:
-        logger.warning("[OCR] gpt-4o-mini returned empty — escalating to gpt-4o")
+        logger.warning("[OCR] gpt-4o-mini returned empty - escalating to gpt-4o")
         text_4o = _ocr_strict_verbatim(image_bytes, content_type, model="gpt-4o")
         return text_4o or "", "low"
 
-    # Pass 2: Verification — check for high-risk OCR errors
+    # Pass 2: Verification - check for high-risk OCR errors
     risk_detected, risk_reason = _verify_ocr_safety(text_mini)
 
     if risk_detected:
-        logger.warning("[OCR] Risk detected in gpt-4o-mini output (%s) — escalating to gpt-4o", risk_reason)
+        logger.warning("[OCR] Pass 2: Risk detected (%s) - escalating to gpt-4o", risk_reason)
         text_4o = _ocr_strict_verbatim(image_bytes, content_type, model="gpt-4o")
         if text_4o:
-            logger.info("[OCR] gpt-4o escalation successful — using gpt-4o result")
+            logger.info("[OCR] gpt-4o escalation successful")
             return text_4o, "medium"
         else:
-            logger.warning("[OCR] gpt-4o escalation also failed — using gpt-4o-mini result with low confidence")
+            logger.warning("[OCR] gpt-4o escalation failed - using gpt-4o-mini result (low confidence)")
             return text_mini, "low"
 
     return text_mini, "high"
-
-
 def _ocr_strict_verbatim(image_bytes: bytes, content_type: str, model: str) -> str:
     """
     OCR with strict verbatim transcription prompt.
