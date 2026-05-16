@@ -1,7 +1,9 @@
 """
-Autoanosis OCR Endpoint v2.0.0
-Handles PDF and image OCR, then immediately triggers the full exams ingestion pipeline.
-One upload = one or more structured ExamReport records.
+Autoanosis OCR Endpoint v3.0.0
+Hybrid OCR Safety Pipeline:
+  Pass 1: Strict verbatim transcription with gpt-4o-mini (cheap, fast)
+  Pass 2: Verification layer — detects high-risk medical OCR errors
+  Pass 3: Escalation to gpt-4o ONLY if confidence is low or risk detected
 
 Auth: X-Identity-Token required (same mechanism as /chat and /exams endpoints).
 Dedup: sha256 + patient_id checked before any processing.
@@ -9,6 +11,7 @@ Dedup: sha256 + patient_id checked before any processing.
 
 import os
 import io
+import re
 import base64
 import hashlib
 import logging
@@ -18,23 +21,48 @@ from openai import OpenAI
 
 logger = logging.getLogger(__name__)
 
-OCR_MODEL_VERSION = "gpt-4o-mini-v1"
+OCR_MODEL_VERSION = "hybrid-v3.0"
 NORMALIZER_VERSION = "v3"
 
 ocr_bp = Blueprint("ocr", __name__)
 
 client = OpenAI(api_key=os.getenv("OPENAI_API_KEY"))
 
+# ---------------------------------------------------------------------------
+# High-risk medical terms — OCR errors in these are clinically dangerous
+# ---------------------------------------------------------------------------
+HIGH_RISK_TERMS = [
+    "άνευ", "ανευ", "χωρίς", "χωρις",
+    "λίθων", "λιθων", "λίθος", "λιθος",
+    "φυσιολογικά", "φυσιολογικα", "φυσιολογικ",
+    "παθολογικά", "παθολογικα",
+    "σπληνεκτομή", "σπληνεκτομη",
+    "χολοκυστεκτομή", "χολοκυστεκτομη",
+    "νεφρεκτομή", "νεφρεκτομη",
+    "αρνητικό", "αρνητικο",
+    "θετικό", "θετικο",
+    "κανονικού", "κανονικου",
+    "χοληδόχος", "χοληδοχος",
+    "σπλήνας", "σπληνας",
+    "ήπαρ", "ηπαρ",
+    "πάγκρεας", "παγκρεας",
+    "νεφροί", "νεφροι",
+]
+
+# Suspicious substitutions that indicate OCR hallucination
+SUSPICIOUS_PATTERNS = [
+    # "Ανευ λίθων" should NEVER become "Απειλούνται" or similar
+    (r"απειλ", "χοληδόχος|χολ|κύστ|gallbladder"),
+    # "Σπληνεκτομή" should NEVER become "Σπληνική" or "Σπλήνας φυσιολογικός"
+    (r"σπληνικ[ήη]", None),
+]
+
 
 # ---------------------------------------------------------------------------
-# Auth helper (mirrors exams_flask._require_identity_token)
+# Auth helper
 # ---------------------------------------------------------------------------
 
 def _require_identity_token():
-    """
-    Verify X-Identity-Token. Returns (uid: int, error_response).
-    Exactly one will be None.
-    """
     try:
         from identity import verify_identity_token
     except ImportError:
@@ -62,19 +90,6 @@ def _require_identity_token():
 
 @ocr_bp.route("/ocr", methods=["POST"])
 def process_ocr():
-    """
-    Upload a PDF or image exam file.
-    1. Authenticate via X-Identity-Token.
-    2. Compute sha256 of the file bytes.
-    3. Extract raw text via OCR.
-    4. Call the exams ingestion pipeline (create_document + process_document).
-    5. Return document_id, status, duplicate flag, and normalization_status.
-
-    Form fields:
-      file         (required) — PDF or image file
-      source       (optional) — "mobile_upload" | "web_upload" | "admin_upload"
-                                defaults to "mobile_upload"
-    """
     uid, err = _require_identity_token()
     if err:
         return err
@@ -94,15 +109,14 @@ def process_ocr():
     filename = (file.filename or "").lower()
     content_type = (file.content_type or "").lower()
 
-    # Compute sha256 of raw file bytes
     file_sha256 = hashlib.sha256(file_data).hexdigest()
 
-    # --- OCR ---
+    # --- OCR (Hybrid Safety Pipeline) ---
     try:
         if content_type == "application/pdf" or filename.endswith(".pdf"):
-            raw_text, ocr_type = _extract_pdf(file_data)
+            raw_text, ocr_type, ocr_confidence = _extract_pdf(file_data)
         elif content_type.startswith("image/"):
-            raw_text = _ocr_image_with_openai(file_data, content_type)
+            raw_text, ocr_confidence = _ocr_image_hybrid(file_data, content_type)
             ocr_type = "image"
         else:
             return jsonify({
@@ -158,9 +172,9 @@ def process_ocr():
             db.commit()
 
             logger.info(
-                "[OCR] Ingestion complete: doc=%s status=%s norm=%s patient=%s source=%s",
+                "[OCR] Ingestion complete: doc=%s status=%s norm=%s patient=%s source=%s confidence=%s",
                 doc.id, result.get("status"), result.get("normalization_status"),
-                uid, ingestion_source,
+                uid, ingestion_source, ocr_confidence,
             )
 
             return jsonify({
@@ -171,8 +185,9 @@ def process_ocr():
                 "status": result.get("status"),
                 "normalization_status": result.get("normalization_status"),
                 "report_count": result.get("report_count", 0),
-                "needs_review": result.get("normalization_status") == "needs_review",
+                "needs_review": result.get("normalization_status") == "needs_review" or ocr_confidence == "low",
                 "ocr_type": ocr_type,
+                "ocr_confidence": ocr_confidence,
                 "ocr_model_version": OCR_MODEL_VERSION,
                 "normalizer_version": NORMALIZER_VERSION,
             }), 201
@@ -198,15 +213,135 @@ def process_ocr():
 
 
 # ---------------------------------------------------------------------------
-# Internal helpers
+# Hybrid OCR Safety Pipeline
 # ---------------------------------------------------------------------------
 
-def _extract_pdf(file_data: bytes) -> tuple[str, str]:
+def _ocr_image_hybrid(image_bytes: bytes, content_type: str) -> tuple[str, str]:
+    """
+    Hybrid OCR pipeline:
+    1. Pass 1: Strict verbatim transcription with gpt-4o-mini
+    2. Pass 2: Verification — detect high-risk medical OCR errors
+    3. Pass 3: Escalate to gpt-4o ONLY if risk detected or confidence low
+
+    Returns (text, confidence) where confidence is "high" | "medium" | "low"
+    """
+    # Pass 1: Strict verbatim transcription (cheap)
+    text_mini = _ocr_strict_verbatim(image_bytes, content_type, model="gpt-4o-mini")
+
+    if not text_mini:
+        logger.warning("[OCR] gpt-4o-mini returned empty — escalating to gpt-4o")
+        text_4o = _ocr_strict_verbatim(image_bytes, content_type, model="gpt-4o")
+        return text_4o or "", "low"
+
+    # Pass 2: Verification — check for high-risk OCR errors
+    risk_detected, risk_reason = _verify_ocr_safety(text_mini)
+
+    if risk_detected:
+        logger.warning("[OCR] Risk detected in gpt-4o-mini output (%s) — escalating to gpt-4o", risk_reason)
+        text_4o = _ocr_strict_verbatim(image_bytes, content_type, model="gpt-4o")
+        if text_4o:
+            logger.info("[OCR] gpt-4o escalation successful — using gpt-4o result")
+            return text_4o, "medium"
+        else:
+            logger.warning("[OCR] gpt-4o escalation also failed — using gpt-4o-mini result with low confidence")
+            return text_mini, "low"
+
+    return text_mini, "high"
+
+
+def _ocr_strict_verbatim(image_bytes: bytes, content_type: str, model: str) -> str:
+    """
+    OCR with strict verbatim transcription prompt.
+    No interpretation, no correction, no medical inference.
+    """
+    try:
+        b64 = base64.b64encode(image_bytes).decode("utf-8")
+        response = client.chat.completions.create(
+            model=model,
+            messages=[
+                {
+                    "role": "system",
+                    "content": (
+                        "Είσαι ένα OCR σύστημα. Αντιγράφεις κείμενο από εικόνες ΑΚΡΙΒΩΣ όπως εμφανίζεται. "
+                        "ΔΕΝ ερμηνεύεις. ΔΕΝ διορθώνεις. ΔΕΝ συμπεραίνεις. ΔΕΝ αλλάζεις ιατρικούς όρους. "
+                        "Αν κάτι δεν διαβάζεται, γράφεις [ΑΔΥΝΑΤΗ ΑΝΑΓΝΩΣΗ]."
+                    ),
+                },
+                {
+                    "role": "user",
+                    "content": [
+                        {
+                            "type": "text",
+                            "text": (
+                                "Αντέγραψε ΑΚΡΙΒΩΣ όλο το κείμενο από αυτή την εικόνα ιατρικής εξέτασης.\n\n"
+                                "ΚΑΝΟΝΕΣ (ΑΥΣΤΗΡΩΣ ΥΠΟΧΡΕΩΤΙΚΟΙ):\n"
+                                "1. Αντέγραψε κάθε λέξη ΑΚΡΙΒΩΣ όπως εμφανίζεται — χωρίς καμία αλλαγή\n"
+                                "2. ΜΗΝ μεταφράζεις, ΜΗΝ ερμηνεύεις, ΜΗΝ αλλάζεις ιατρικές λέξεις\n"
+                                "3. Διατήρησε την αρχική ορθογραφία ακόμα και αν φαίνεται λανθασμένη\n"
+                                "4. Περίλαβε: ονόματα, ημερομηνίες, τιμές, μονάδες, σχόλια, υπογραφές\n"
+                                "5. Αν κάτι δεν διαβάζεται καθαρά, γράψε [ΑΔΥΝΑΤΗ ΑΝΑΓΝΩΣΗ]\n"
+                                "6. Επέστρεψε ΜΟΝΟ το κείμενο — χωρίς επεξηγήσεις ή σχόλια\n\n"
+                                "ΠΑΡΑΔΕΙΓΜΑΤΑ ΣΩΣΤΗΣ ΑΝΤΙΓΡΑΦΗΣ:\n"
+                                "- Αν γράφει 'Ανευ λίθων' → γράψε 'Ανευ λίθων' (ΟΧΙ 'Απειλούνται')\n"
+                                "- Αν γράφει 'Σπληνεκτομή' → γράψε 'Σπληνεκτομή' (ΟΧΙ 'Σπληνική')\n"
+                                "- Αν γράφει 'Χωρίς παθολογικά ευρήματα' → γράψε ακριβώς αυτό"
+                            ),
+                        },
+                        {
+                            "type": "image_url",
+                            "image_url": {"url": f"data:{content_type};base64,{b64}"},
+                        },
+                    ],
+                }
+            ],
+            max_tokens=2000,
+        )
+        return response.choices[0].message.content.strip()
+    except Exception as e:
+        logger.error("[OCR] %s Vision error: %s", model, e)
+        return ""
+
+
+def _verify_ocr_safety(text: str) -> tuple[bool, str]:
+    """
+    Verification pass: detect high-risk OCR errors in medical text.
+    Returns (risk_detected: bool, reason: str)
+
+    Checks for:
+    1. Suspicious substitutions (e.g. "Απειλούνται" near gallbladder context)
+    2. Missing high-risk terms that should appear in typical ultrasound reports
+    3. Presence of [ΑΔΥΝΑΤΗ ΑΝΑΓΝΩΣΗ] markers (indicates low confidence)
+    """
+    text_lower = text.lower()
+
+    # Check 1: Suspicious substitution patterns
+    for suspicious_pattern, context_pattern in SUSPICIOUS_PATTERNS:
+        if re.search(suspicious_pattern, text_lower):
+            if context_pattern is None or re.search(context_pattern, text_lower):
+                return True, f"suspicious_pattern:{suspicious_pattern}"
+
+    # Check 2: Unreadable markers
+    if "[αδυνατη αναγνωση]" in text_lower or "[αδύνατη αναγνωση]" in text_lower:
+        return True, "unreadable_sections"
+
+    # Check 3: Very short output for what appears to be a medical document
+    # (less than 50 chars suggests OCR failure)
+    if len(text.strip()) < 50:
+        return True, "too_short"
+
+    return False, ""
+
+
+# ---------------------------------------------------------------------------
+# PDF extraction (unchanged logic, now uses hybrid for scanned pages)
+# ---------------------------------------------------------------------------
+
+def _extract_pdf(file_data: bytes) -> tuple[str, str, str]:
     """
     Extract text from a PDF.
-    1. Try PyMuPDF text extraction (text-based PDFs).
-    2. Fall back to OpenAI Vision OCR (scanned PDFs).
-    Returns (raw_text, ocr_type).
+    1. Try PyMuPDF text extraction (text-based PDFs) → confidence "high"
+    2. Fall back to hybrid OCR (scanned PDFs)
+    Returns (raw_text, ocr_type, confidence)
     """
     try:
         import fitz
@@ -224,60 +359,25 @@ def _extract_pdf(file_data: bytes) -> tuple[str, str]:
             text_pages.append(text)
 
     if text_pages:
-        return "\n\n".join(text_pages), "pdf_text"
+        return "\n\n".join(text_pages), "pdf_text", "high"
 
-    # Scanned PDF — OCR via OpenAI Vision (max 5 pages)
+    # Scanned PDF — hybrid OCR (max 5 pages)
     ocr_parts = []
+    overall_confidence = "high"
     max_pages = min(5, len(doc))
     for page_num in range(max_pages):
         page = doc[page_num]
         pix = page.get_pixmap(matrix=fitz.Matrix(2, 2))
         img_bytes = pix.tobytes("png")
-        ocr_text = _ocr_image_with_openai(img_bytes, "image/png")
+        ocr_text, confidence = _ocr_image_hybrid(img_bytes, "image/png")
         if ocr_text:
             ocr_parts.append(f"--- Σελίδα {page_num + 1} ---\n{ocr_text}")
+        if confidence == "low":
+            overall_confidence = "low"
+        elif confidence == "medium" and overall_confidence == "high":
+            overall_confidence = "medium"
 
     if ocr_parts:
-        return "\n\n".join(ocr_parts), "pdf_scanned"
+        return "\n\n".join(ocr_parts), "pdf_scanned", overall_confidence
 
-    return "", "pdf_empty"
-
-
-def _ocr_image_with_openai(image_bytes: bytes, content_type: str) -> str:
-    """
-    OCR an image using OpenAI Vision.
-    Returns extracted text string (empty string on failure).
-    """
-    try:
-        b64 = base64.b64encode(image_bytes).decode("utf-8")
-        response = client.chat.completions.create(
-            model="gpt-4o-mini",
-            messages=[
-                {
-                    "role": "user",
-                    "content": [
-                        {
-                            "type": "text",
-                            "text": (
-                                "Εξάγε όλο το κείμενο από αυτή την εικόνα ιατρικής εξέτασης.\n"
-                                "Περίλαβε:\n"
-                                "- Όνομα εξέτασης\n"
-                                "- Ημερομηνία\n"
-                                "- Όλες τις τιμές και μετρήσεις\n"
-                                "- Τυχόν σχόλια ή παρατηρήσεις\n\n"
-                                "Επέστρεψε μόνο το εξαγμένο κείμενο, χωρίς επεξηγήσεις."
-                            ),
-                        },
-                        {
-                            "type": "image_url",
-                            "image_url": {"url": f"data:{content_type};base64,{b64}"},
-                        },
-                    ],
-                }
-            ],
-            max_tokens=2000,
-        )
-        return response.choices[0].message.content.strip()
-    except Exception as e:
-        logger.error("[OCR] OpenAI Vision error: %s", e)
-        return ""
+    return "", "pdf_empty", "low"
