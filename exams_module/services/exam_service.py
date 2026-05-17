@@ -135,6 +135,122 @@ def _parse_date(date_str: str | None) -> datetime | None:
     return None
 
 
+# ---------------------------------------------------------------------------
+# Medical Greek Narrative Polish (imaging reports)
+# ---------------------------------------------------------------------------
+
+# Organ-label map: raw OCR prefix → clean Greek label
+_ORGAN_LABELS = [
+    (r"^ΧΟΛΗ\s*ΔΟΧΟΣ\s*ΚΥΣΤΗ",     "Χοληδόχος κύστη"),
+    (r"^ΧΟΛΗΔΟΧΟΣ\s*ΚΥΣΤΗ",          "Χοληδόχος κύστη"),
+    (r"^ΧΟΛΗ\s*ΔΟΧΟΣ\s*ΠΟΡΟΣ",      "Χοληδόχος πόρος"),
+    (r"^ΧΟΛΗΔΟΧΟΣ\s*ΠΟΡΟΣ",          "Χοληδόχος πόρος"),
+    (r"^ΗΠΑΡ\b",                       "Ήπαρ"),
+    (r"^ΗΠΑΤΟΣ\b",                     "Ήπαρ"),
+    (r"^ΠΑΓΚΡΕΑΣ\b",                   "Πάγκρεας"),
+    (r"^ΝΕΦΡΟΙ\b",                     "Νεφροί"),
+    (r"^ΝΕΦΡΟΣ\b",                     "Νεφρός"),
+    (r"^ΣΠΛΗΝΑΣ\b",                    "Σπλήνας"),
+    (r"^ΣΠΛΗΝΕΣ\b",                    "Σπλήνας"),
+    (r"^ΚΟΙΛΙΑΚΗ\s*ΑΟΡΤΗ",            "Κοιλιακή αορτή"),
+    (r"^ΚΟΙΛΙΑΚΗΣ\s*ΑΟΡΤΗΣ",          "Κοιλιακή αορτή"),
+    (r"^ΚΑΤΩ\s*ΚΟΙΛΙΑ",               "Κάτω κοιλία"),
+    (r"^ΟΥΡΟΔΟΧΟΣ\s*ΚΥΣΤΗ",           "Ουροδόχος κύστη"),
+    (r"^ΠΡΟΣΤΑΤΗΣ\b",                  "Προστάτης"),
+    (r"^ΠΡΟΣΤΑΤΗ\b",                   "Προστάτης"),
+    (r"^ΜΗΤΡΑ\b",                      "Μήτρα"),
+    (r"^ΩΟΘΗΚΕΣ\b",                    "Ωοθήκες"),
+    (r"^ΛΕΜΦΑΔΕΝΕΣ\b",                 "Λεμφαδένες"),
+    (r"^ΛΕΜΦΑΔΕΝΑΣ\b",                 "Λεμφαδένας"),
+    (r"^ΘΥΡΕΟΕΙΔΗΣ\b",                 "Θυρεοειδής"),
+    (r"^ΚΑΡΔΙΑ\b",                     "Καρδία"),
+    (r"^ΠΝΕΥΜΟΝΕΣ\b",                  "Πνεύμονες"),
+    (r"^ΧΟΛΑΓΓΕΙΑ\b",                  "Χολαγγεία"),
+]
+
+# Terminology corrections for imaging narratives
+_NARRATIVE_CORRECTIONS = [
+    (r"\bήπιος ήπατος\b",              "υφή ήπατος"),
+    (r"\bομοιογενης\b",                "ομοιογενής"),
+    (r"\bηχοδομη\b",                   "ηχοδομή"),
+    (r"\bηχοδομης\b",                  "ηχοδομής"),
+    (r"\bφυσιολογικο\b",               "φυσιολογικό"),
+    (r"\bφυσιολογικα\b",               "φυσιολογικά"),
+    (r"\bπαθολογικα\b",                "παθολογικά"),
+    (r"\bπαθολογικο\b",                "παθολογικό"),
+    (r"\bανευρυσματικη\b",             "ανευρυσματική"),
+    (r"\bτοιχωματικη\b",               "τοιχωματική"),
+    (r"\bκανονικου\b",                 "κανονικού"),
+    (r"\bκανονικο\b",                  "κανονικό"),
+    (r"\bκανονικης\b",                 "κανονικής"),
+    (r"\bφυσιολογικου\b",              "φυσιολογικού"),
+    (r"\bαμφοτερα\b",                  "αμφότερα"),
+    (r"\bαμφ:",                        "Αμφ:"),
+    (r"\bοραta\b",                     "ορατά"),
+    (r"\bοπτικα\b",                    "οπτικά"),
+    (r"\bμεγεθος\b",                   "μέγεθος"),
+    (r"\bδομη\b",                      "δομή"),
+    (r"\bδομης\b",                     "δομής"),
+    (r"\bαλλοιωση\b",                  "αλλοίωση"),
+    (r"\bαλλοιωσεις\b",                "αλλοιώσεις"),
+    (r"\bαλλοιωση\b",                  "αλλοίωση"),
+]
+
+
+def _polish_imaging_narrative(text: str) -> str:
+    """
+    Post-process raw OCR imaging narrative into clean medical Greek.
+    Converts all-caps organ labels to title-case with colon separator,
+    applies terminology corrections, and ensures sentence punctuation.
+    """
+    import re
+
+    if not text or len(text.strip()) < 10:
+        return text
+
+    # --- Step 1: Split into segments by organ-label boundaries ---
+    # Organ labels appear as ALL-CAPS words at the start of a segment
+    # (possibly preceded by newline or period+space)
+    segments = re.split(r'(?<=[.!?\n])\s*(?=[Α-ΩA-Z]{2,}\s)', text)
+    if len(segments) <= 1:
+        # Try splitting on ALL-CAPS word sequences that look like organ headers
+        segments = re.split(r'(?=\b[Α-Ω]{3,}(?:\s+[Α-Ω]{2,})?\s+(?:[Α-Ωα-ω]))', text)
+
+    polished_segments = []
+    for seg in segments:
+        seg = seg.strip()
+        if not seg:
+            continue
+
+        # --- Step 2: Replace ALL-CAPS organ prefix with Title-Case: label ---
+        replaced = False
+        for pattern, label in _ORGAN_LABELS:
+            m = re.match(pattern, seg, re.IGNORECASE)
+            if m:
+                remainder = seg[m.end():].strip()
+                # Remove leading colon/dash if present
+                remainder = re.sub(r'^[:\-–—]\s*', '', remainder)
+                # Ensure remainder starts with capital
+                if remainder and remainder[0].islower():
+                    remainder = remainder[0].upper() + remainder[1:]
+                seg = f"{label}: {remainder}" if remainder else label
+                replaced = True
+                break
+
+        # --- Step 3: Apply terminology corrections ---
+        for pattern, replacement in _NARRATIVE_CORRECTIONS:
+            seg = re.sub(pattern, replacement, seg, flags=re.IGNORECASE)
+
+        # --- Step 4: Ensure sentence ends with period ---
+        seg = seg.strip()
+        if seg and seg[-1] not in '.!?':
+            seg += '.'
+
+        polished_segments.append(seg)
+
+    return '  '.join(polished_segments) if polished_segments else text
+
+
 def process_document(db: Session, doc):
     """
     Process a document through the AI normalizer pipeline.
@@ -207,7 +323,12 @@ def process_document(db: Session, doc):
             }.get(imp.section_type.lower(), imp.section_type.title())
             narrative_parts.append(f"{section_label}:\n{imp.text}")
 
-        narrative_text = "\n\n".join(narrative_parts) if narrative_parts else None
+        raw_narrative = "\n\n".join(narrative_parts) if narrative_parts else None
+        # Apply medical Greek polish to imaging narratives
+        if raw_narrative and parsed.exam_category in ("imaging", "imaging_report"):
+            narrative_text = _polish_imaging_narrative(raw_narrative)
+        else:
+            narrative_text = raw_narrative
 
         # Summary: first non-narrative impression or first 300 chars of narrative
         non_narrative = [i for i in parsed.impressions if i.section_type != "narrative"]
