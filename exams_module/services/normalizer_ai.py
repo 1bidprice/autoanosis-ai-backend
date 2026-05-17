@@ -194,6 +194,8 @@ CRITICAL RULES:
 11. For each extracted result, include the approximate OCR line or snippet where you found it (ocr_snippet field) for traceability.
 12. If you cannot confidently extract a value, still include the test with value_text containing what you see, and set parser_confidence to a lower value (0.3-0.6).
 13. exam_date must always be returned as ISO date: YYYY-MM-DD. Never return DD/MM/YYYY, MM/DD/YYYY, DD-MM-YYYY, or localized date strings. If the date is ambiguous or cannot be confidently normalized, return null.
+14. For age-stratified or time-stratified reference ranges (e.g., "3.5-5.0 (>60ετη: 3.4-4.8)", "Πρωί 7-10πμ: 133-537 / Απόγευμα 4-8μμ: 68-327", "8.8-46.3 Χειμερινή / 15.7-60.3 Καλοκαιρινή"), ALWAYS use the FIRST / most general range as reference_low and reference_high. Store the full raw string in reference_text. Never use an age-specific or time-specific sub-range as the primary range unless it is the only one given.
+15. For multi-page documents where the patient header (ΟΝΟΜΑΤΕΠΩΝΥΜΟ, ΗΜΕΡ.ΕΞΕΤΑΣΗΣ) repeats on each page, treat the entire document as ONE exam from the date on the first page. Do not create duplicate metadata entries.
 
 Respond with ONLY valid JSON matching this exact schema:
 {
@@ -265,8 +267,9 @@ def _call_openai(ocr_text: str, max_retries: int = 2) -> Optional[dict]:
                     {"role": "user", "content": f"Extract ALL test results from this medical document:\n\n{text_to_send}"}
                 ],
                 temperature=0.05,
-                max_tokens=8192,
+                max_tokens=6000,
                 response_format={"type": "json_object"},
+                timeout=110,
             )
 
             raw_json = response.choices[0].message.content.strip()
