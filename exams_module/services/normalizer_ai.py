@@ -680,10 +680,85 @@ def ai_normalize_imaging(text: str) -> ParsedReport:
     )
 
 
+# ---------------------------------------------------------------------------
+# Chunked normalization for multi-section PDFs
+# ---------------------------------------------------------------------------
+
+CHUNK_THRESHOLD = 2000  # chars — above this, try to split into sections
+
+
+def _split_into_sections(text: str) -> list:
+    """
+    Split a multi-section lab PDF into individual sections.
+    Each section starts with a patient header (ΟΝΟΜΑΤΕΠΩΝΥΜΟ:).
+    Returns a list of section strings, or [text] if no split point found.
+    """
+    import re as _re
+    # Split on patient header repetitions (each page of a multi-section PDF starts with this)
+    parts = _re.split(r'(?=ΟΝΟΜΑΤΕΠΩΝΥΜΟ\s*:)', text.strip())
+    # Filter out empty parts
+    sections = [p.strip() for p in parts if p.strip() and len(p.strip()) > 100]
+    if len(sections) <= 1:
+        return [text]
+    logger.info(f"[CHUNKER] Split document into {len(sections)} sections")
+    return sections
+
+
+def _merge_parsed_reports(reports: list) -> Optional['ParsedReport']:
+    """
+    Merge multiple ParsedReport objects from chunked normalization into one.
+    Uses metadata from the first report, merges all results and impressions.
+    """
+    valid = [r for r in reports if r is not None]
+    if not valid:
+        return None
+    if len(valid) == 1:
+        return valid[0]
+
+    # Use first report as base
+    base = valid[0]
+    all_results = list(base.results)
+    all_impressions = list(base.impressions)
+    total_extracted = 0
+    total_valid = 0
+
+    for r in valid[1:]:
+        all_results.extend(r.results)
+        all_impressions.extend(r.impressions)
+        vs = r.validation_summary or {}
+        total_extracted += vs.get('total_extracted', 0)
+        total_valid += vs.get('valid', 0)
+
+    # Deduplicate results by display_name (keep first occurrence)
+    seen = set()
+    deduped = []
+    for res in all_results:
+        key = (res.display_name or '').lower().strip()
+        if key not in seen:
+            seen.add(key)
+            deduped.append(res)
+
+    base.results = deduped
+    base.impressions = all_impressions
+    base.validation_summary = base.validation_summary or {}
+    base.validation_summary['chunked_sections'] = len(valid)
+    base.validation_summary['total_extracted'] = total_extracted + (base.validation_summary.get('total_extracted', 0))
+    base.source_lineage['chunked'] = str(len(valid))
+
+    # Recalculate confidence and status
+    norm_status, confidence = _decide_normalization_status(deduped, base.validation_summary)
+    base.normalization_status = norm_status
+    base.confidence_score = confidence
+
+    logger.info(f"[CHUNKER] Merged {len(valid)} sections → {len(deduped)} unique results")
+    return base
+
+
 def normalize_document(text: str) -> Optional[ParsedReport]:
     """
     Main entry point — drop-in replacement for normalizer.py's normalize_document().
     Routes to AI lab or imaging normalizer based on document classification.
+    For large multi-section PDFs, uses chunked normalization to avoid memory/timeout issues.
     """
     garbage, reason = detect_garbage_text(text)
     if garbage:
@@ -692,6 +767,19 @@ def normalize_document(text: str) -> Optional[ParsedReport]:
     label, class_confidence = classify_document(text)
 
     if label == "lab":
+        # For large multi-section PDFs, split into chunks to avoid memory/timeout
+        if len(text) > CHUNK_THRESHOLD:
+            sections = _split_into_sections(text)
+            if len(sections) > 1:
+                reports = []
+                for i, section in enumerate(sections):
+                    logger.info(f"[CHUNKER] Processing section {i+1}/{len(sections)} ({len(section)} chars)")
+                    report = ai_normalize_lab(section)
+                    reports.append(report)
+                merged = _merge_parsed_reports(reports)
+                if merged is not None:
+                    return merged
+                # Fall through to single-call if merge failed
         return ai_normalize_lab(text)
 
     if label == "imaging":
