@@ -15,6 +15,7 @@ import re
 import base64
 import hashlib
 import logging
+import threading
 
 from flask import Blueprint, request, jsonify
 from openai import OpenAI
@@ -186,29 +187,71 @@ def process_ocr():
                 }), 200
 
             db.flush()
-            result = process_document(db, doc)
+            doc_id = doc.id
             db.commit()
 
+            # ---------------------------------------------------------------
+            # Async background normalization — return 200 + extracted_text
+            # immediately (WordPress needs extracted_text to save to health_info
+            # and fire the autoanosis_ocr_complete hook).
+            # GPT normalization runs in a background daemon thread.
+            # ---------------------------------------------------------------
+            def _background_normalize(document_id, patient_id, source, confidence):
+                try:
+                    from exams_module.db.database import get_db as _get_db
+                    from exams_module.services.exam_service import process_document as _process
+                    _db = next(_get_db())
+                    try:
+                        from exams_module.models.exam_models import Document as _Doc
+                        _doc = _db.query(_Doc).filter(_Doc.id == document_id).first()
+                        if _doc:
+                            _result = _process(_db, _doc)
+                            _db.commit()
+                            logger.info(
+                                "[OCR-BG] Normalization complete: doc=%s status=%s norm=%s patient=%s source=%s confidence=%s",
+                                document_id, _result.get("status"), _result.get("normalization_status"),
+                                patient_id, source, confidence,
+                            )
+                        else:
+                            logger.error("[OCR-BG] Document %s not found in background thread", document_id)
+                    except Exception as _e:
+                        _db.rollback()
+                        logger.error("[OCR-BG] Normalization failed for doc=%s: %s", document_id, _e)
+                    finally:
+                        _db.close()
+                except Exception as _outer:
+                    logger.error("[OCR-BG] Fatal error in background thread for doc=%s: %s", document_id, _outer)
+
+            t = threading.Thread(
+                target=_background_normalize,
+                args=(doc_id, uid, ingestion_source, ocr_confidence),
+                daemon=True,
+            )
+            t.start()
+
             logger.info(
-                "[OCR] Ingestion complete: doc=%s status=%s norm=%s patient=%s source=%s confidence=%s",
-                doc.id, result.get("status"), result.get("normalization_status"),
-                uid, ingestion_source, ocr_confidence,
+                "[OCR] Accepted: doc=%s patient=%s source=%s — normalization running in background",
+                doc_id, uid, ingestion_source,
             )
 
+            # Return 200 with extracted_text so WordPress can save to health_info
+            # and fire autoanosis_ocr_complete hook without waiting for GPT normalization
             return jsonify({
                 "success": True,
                 "duplicate": False,
                 "is_duplicate": False,
-                "document_id": doc.id,
-                "status": result.get("status"),
-                "normalization_status": result.get("normalization_status"),
-                "report_count": result.get("report_count", 0),
-                "needs_review": result.get("normalization_status") == "needs_review" or ocr_confidence == "low",
+                "document_id": doc_id,
+                "extracted_text": corrected_text,
+                "status": "processing",
+                "normalization_status": "processing",
+                "report_count": 0,
+                "needs_review": False,
                 "ocr_type": ocr_type,
                 "ocr_confidence": ocr_confidence,
                 "ocr_model_version": OCR_MODEL_VERSION,
                 "normalizer_version": NORMALIZER_VERSION,
-            }), 201
+                "async": True,
+            }), 200
 
         except Exception as e:
             db.rollback()
