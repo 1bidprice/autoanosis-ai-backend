@@ -161,7 +161,8 @@ function autoanosis_exams_ingest_ocr( $patient_id, $identity_token, $sha256, $ra
     $resp_body = wp_remote_retrieve_body( $response );
     $data = json_decode( $resp_body, true );
 
-    if ( $code !== 201 ) {
+    // Accept 201 (sync) or 202 (async background normalization)
+    if ( $code !== 201 && $code !== 202 ) {
         $detail = is_array( $data ) ? ( $data['detail'] ?? $data['error'] ?? $resp_body ) : $resp_body;
         error_log( '[AUTOANOSIS EXAMS] ingest HTTP ' . $code . ': ' . $detail );
         return new WP_Error( 'exams_ingest_error', 'Exams ingest returned HTTP ' . $code . ': ' . $detail );

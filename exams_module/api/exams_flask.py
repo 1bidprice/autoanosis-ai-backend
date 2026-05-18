@@ -14,6 +14,7 @@ GET /patients/<id>/reports accepts the token OR the internal proxy secret.
 """
 import logging
 import os
+import threading
 from flask import Blueprint, request, jsonify
 from sqlalchemy.orm import joinedload
 
@@ -207,11 +208,13 @@ def process_exam_document(document_id):
 @exams_bp.route("/ingest-from-ocr", methods=["POST"])
 def ingest_from_ocr():
     """
-    Combined endpoint: ingest OCR text AND immediately run the normalizer.
-    This is the primary entry point called by the WordPress bridge after OCR.
+    Combined endpoint: ingest OCR text AND run the normalizer asynchronously.
+    Returns 202 Accepted immediately after document creation so the WordPress
+    bridge (30s timeout) never times out. Normalization runs in a background
+    thread and updates the document/report records when complete.
     Body (JSON): { sha256, raw_text, source_type?, original_filename?, mime_type? }
     Requires: X-Identity-Token header.
-    Returns: { document_id, status, normalization_status, review_required, report_ids }
+    Returns: { document_id, status, async: true }
     """
     uid, err = _require_identity_token()
     if err:
@@ -245,21 +248,47 @@ def ingest_from_ocr():
                 "message": "Document already exists for this patient",
             }), 200
         db.flush()
-        result = process_document(db, doc)
+        doc_id = doc.id
         db.commit()
-        logger.info(
-            f"[EXAMS] Ingest+process: doc={doc.id} "
-            f"status={result.get('status')} "
-            f"norm={result.get('normalization_status')} "
-            f"patient={uid}"
-        )
-        return jsonify(result), 201
+        logger.info(f"[EXAMS] Document created async: {doc_id} for patient {uid}")
     except Exception as e:
         db.rollback()
-        logger.error(f"[EXAMS] ingest_from_ocr error: {e}")
+        logger.error(f"[EXAMS] ingest_from_ocr create error: {e}")
         return jsonify({"error": "ingestion_failed", "detail": str(e)}), 500
     finally:
         db.close()
+
+    # ── Background normalization ──────────────────────────────────────────────
+    def _run_normalization(document_id: int):
+        """Run process_document in a background thread with its own DB session."""
+        bg_db = _db_session()
+        try:
+            bg_doc = bg_db.query(ExamDocument).filter(ExamDocument.id == document_id).first()
+            if not bg_doc:
+                logger.error(f"[EXAMS_BG] Document {document_id} not found in background thread")
+                return
+            result = process_document(bg_db, bg_doc)
+            bg_db.commit()
+            logger.info(
+                f"[EXAMS_BG] Async process complete: doc={document_id} "
+                f"norm={result.get('normalization_status')} "
+                f"patient={uid}"
+            )
+        except Exception as e:
+            bg_db.rollback()
+            logger.error(f"[EXAMS_BG] Background normalization failed for doc {document_id}: {e}")
+        finally:
+            bg_db.close()
+
+    t = threading.Thread(target=_run_normalization, args=(doc_id,), daemon=True)
+    t.start()
+
+    return jsonify({
+        "document_id": doc_id,
+        "status": "pending",
+        "async": True,
+        "message": "Document received. Normalization running in background.",
+    }), 202
 
 
 # ---------------------------------------------------------------------------
