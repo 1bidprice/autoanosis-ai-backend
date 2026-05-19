@@ -14,6 +14,7 @@ Auth: X-Identity-Token (patient JWT) for all endpoints.
 """
 import base64
 import hashlib
+import io
 import logging
 import os
 from datetime import datetime
@@ -30,10 +31,56 @@ medical_docs_bp = Blueprint("medical_documents", __name__, url_prefix="/medical-
 # Max file size: 20 MB
 MAX_FILE_SIZE = 20 * 1024 * 1024
 
+# Max extracted text stored per document (chars) — keeps AI context manageable
+MAX_EXTRACTED_TEXT_CHARS = 15000
+
 ALLOWED_CATEGORIES = {
     "general", "lab_result", "imaging", "referral",
     "prescription", "article", "discharge_summary", "other"
 }
+
+
+# ---------------------------------------------------------------------------
+# Text extraction helper
+# ---------------------------------------------------------------------------
+def _extract_text_from_bytes(file_bytes: bytes, mime_type: str, filename: str) -> str | None:
+    """
+    Extract text content from a file for AI context.
+    Supports PDF (via PyMuPDF) and plain text files.
+    Returns extracted text (truncated) or None if extraction fails/unsupported.
+    """
+    text = None
+
+    # PDF extraction via PyMuPDF (fitz)
+    if mime_type in ("application/pdf",) or filename.lower().endswith(".pdf"):
+        try:
+            import fitz  # PyMuPDF
+            doc = fitz.open(stream=file_bytes, filetype="pdf")
+            pages_text = []
+            for page in doc:
+                page_text = page.get_text("text")
+                if page_text.strip():
+                    pages_text.append(page_text.strip())
+            doc.close()
+            if pages_text:
+                text = "\n\n".join(pages_text)
+        except Exception as e:
+            logger.warning(f"[MEDICAL-DOCS] PDF text extraction failed: {e}")
+
+    # Plain text files
+    elif mime_type in ("text/plain",) or filename.lower().endswith(".txt"):
+        try:
+            text = file_bytes.decode("utf-8", errors="replace")
+        except Exception as e:
+            logger.warning(f"[MEDICAL-DOCS] Text file decode failed: {e}")
+
+    # Truncate to max chars
+    if text:
+        text = text.strip()
+        if len(text) > MAX_EXTRACTED_TEXT_CHARS:
+            text = text[:MAX_EXTRACTED_TEXT_CHARS] + "\n\n[... κείμενο περικόπηκε ...]"
+
+    return text if text else None
 
 
 # ---------------------------------------------------------------------------
@@ -73,6 +120,7 @@ def _doc_to_dict(doc: MedicalDocument, include_file_data: bool = False) -> dict:
         "document_category": doc.document_category,
         "document_date": doc.document_date.isoformat() if doc.document_date else None,
         "notes": doc.notes,
+        "has_extracted_text": bool(doc.extracted_text),
         "uploaded_at": doc.uploaded_at.isoformat() if doc.uploaded_at else None,
         "updated_at": doc.updated_at.isoformat() if doc.updated_at else None,
     }
@@ -94,6 +142,7 @@ def upload_document():
       - document_category: one of ALLOWED_CATEGORIES (default: general)
       - document_date: ISO date string (optional)
       - notes: optional text notes
+    Text is automatically extracted from PDFs for AI context.
     """
     patient_id, err = _require_identity()
     if err:
@@ -152,6 +201,13 @@ def upload_document():
         # Detect mime type
         mime_type = f.content_type or "application/octet-stream"
 
+        # Extract text for AI context
+        extracted_text = _extract_text_from_bytes(file_bytes, mime_type, f.filename)
+        if extracted_text:
+            logger.info(f"[MEDICAL-DOCS] Extracted {len(extracted_text)} chars from {f.filename}")
+        else:
+            logger.info(f"[MEDICAL-DOCS] No text extracted from {f.filename} (mime={mime_type})")
+
         doc = MedicalDocument(
             patient_id=patient_id,
             original_filename=f.filename,
@@ -159,6 +215,7 @@ def upload_document():
             file_size_bytes=len(file_bytes),
             sha256=sha256,
             file_data=file_b64,
+            extracted_text=extracted_text,
             document_title=document_title,
             document_category=document_category,
             document_date=document_date,
@@ -173,6 +230,7 @@ def upload_document():
         return jsonify({
             "success": True,
             "document_id": doc.id,
+            "text_extracted": bool(extracted_text),
             "document": _doc_to_dict(doc)
         }), 201
 

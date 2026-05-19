@@ -639,12 +639,13 @@ def get_patient_exam_snapshot(patient_id):
             for d in docs:
                 medical_docs_list.append({
                     "id": d.id,
-                    "title": d.title or d.original_filename,
-                    "category": d.category or "general",
+                    "document_title": d.document_title or d.original_filename,
+                    "document_category": d.document_category or "general",
                     "notes": d.notes or "",
                     "document_date": d.document_date.isoformat() if d.document_date else None,
                     "uploaded_at": d.uploaded_at.isoformat() if d.uploaded_at else None,
-                    "file_type": d.file_type or "",
+                    "mime_type": d.mime_type or "",
+                    "extracted_text": d.extracted_text or "",
                 })
         except Exception as _doc_err:
             logger.warning(f"[SNAPSHOT] Could not fetch medical_documents: {_doc_err}")

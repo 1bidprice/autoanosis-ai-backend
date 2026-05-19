@@ -34,6 +34,9 @@ class MedicalDocument(Base):
     # For large files this could be a storage URL
     file_data = Column(Text, nullable=True)  # base64-encoded file content
 
+    # Extracted text content for AI context (from PDF text layer or OCR)
+    extracted_text = Column(Text, nullable=True)
+
     # User-provided metadata
     document_title = Column(Text, nullable=True)
     document_category = Column(String(64), nullable=True, default="general")

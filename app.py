@@ -78,6 +78,18 @@ try:
 except Exception as _exams_init_err:
     logger.warning(f"[EXAMS] init_db warning (non-fatal): {_exams_init_err}")
 
+# Run incremental migrations (idempotent ALTER TABLE statements)
+try:
+    from exams_module.db.database import engine
+    with engine.connect() as _conn:
+        _conn.execute(__import__("sqlalchemy").text(
+            "ALTER TABLE aa_medical_documents ADD COLUMN IF NOT EXISTS extracted_text TEXT"
+        ))
+        _conn.commit()
+    logger.info("[MIGRATIONS] aa_medical_documents.extracted_text column ensured")
+except Exception as _mig_err:
+    logger.warning(f"[MIGRATIONS] ALTER TABLE warning (non-fatal): {_mig_err}")
+
 CORS(app, resources={
     r"/*": {
         "origins": ["https://autoanosis.com", "https://www.autoanosis.com"],
@@ -619,18 +631,23 @@ def build_selective_context(snap: dict, intent: str) -> str:
         doc_lines = []
         for d in medical_docs[:10]:
             if isinstance(d, dict):
-                title = d.get("title") or "Χωρίς τίτλο"
-                cat = _cat_labels.get(d.get("category") or "general", d.get("category") or "Γενικό")
+                title = d.get("title") or d.get("document_title") or "Χωρίς τίτλο"
+                cat_key = d.get("category") or d.get("document_category") or "general"
+                cat = _cat_labels.get(cat_key, cat_key)
                 doc_date = d.get("document_date") or d.get("uploaded_at") or ""
                 notes = d.get("notes") or ""
+                extracted_text = d.get("extracted_text") or ""
                 line = f"• {title} [{cat}]"
                 if doc_date:
                     line += f" — {doc_date[:10]}"
                 if notes:
-                    line += f" — Σημειώσεις: {notes[:100]}"
+                    line += f"\n  Σημειώσεις: {notes[:300]}"
+                if extracted_text:
+                    # Include full extracted text so AI can read the document content
+                    line += f"\n  Περιεχόμενο εγγράφου:\n{extracted_text[:8000]}"
                 doc_lines.append(line)
         if doc_lines:
-            parts.append("10. ΑΡΧΕΙΟ ΕΓΓΡΑΦΩΝ:\n" + "\n".join(doc_lines))
+            parts.append("10. ΑΡΧΕΙΟ ΕΓΓΡΑΦΩΝ:\n" + "\n\n".join(doc_lines))
 
     if not parts:
         return ""
