@@ -625,6 +625,30 @@ def get_patient_exam_snapshot(patient_id):
             reverse=True
         )
 
+        # Fetch medical documents archive for AI context
+        medical_docs_list = []
+        try:
+            from exams_module.models.medical_document_model import MedicalDocument
+            docs = (
+                db.query(MedicalDocument)
+                .filter(MedicalDocument.patient_id == patient_id)
+                .order_by(MedicalDocument.uploaded_at.desc())
+                .limit(20)
+                .all()
+            )
+            for d in docs:
+                medical_docs_list.append({
+                    "id": d.id,
+                    "title": d.title or d.original_filename,
+                    "category": d.category or "general",
+                    "notes": d.notes or "",
+                    "document_date": d.document_date.isoformat() if d.document_date else None,
+                    "uploaded_at": d.uploaded_at.isoformat() if d.uploaded_at else None,
+                    "file_type": d.file_type or "",
+                })
+        except Exception as _doc_err:
+            logger.warning(f"[SNAPSHOT] Could not fetch medical_documents: {_doc_err}")
+
         return jsonify({
             "patient_id": patient_id,
             "structured_exam_results": structured_results,
@@ -634,6 +658,9 @@ def get_patient_exam_snapshot(patient_id):
             # NEW: narrative/imaging reports for AI context
             "narrative_exam_context": narrative_exam_context,
             "narrative_report_count": len(narrative_exam_context),
+            # Medical documents archive
+            "medical_documents": medical_docs_list,
+            "medical_documents_count": len(medical_docs_list),
         }), 200
     except Exception as e:
         logger.error(f"[EXAMS] get_patient_exam_snapshot error: {e}")

@@ -605,6 +605,33 @@ def build_selective_context(snap: dict, intent: str) -> str:
     if trend_parts:
         parts.append("9. ΤΑΣΕΙΣ ΕΒΔΟΜΑΔΑΣ:\n" + "\n".join(trend_parts))
 
+    # 10. Medical Documents Archive
+    medical_docs = snap.get("medical_documents") or []
+    if isinstance(medical_docs, list) and medical_docs:
+        _cat_labels = {
+            "general": "Γενικό",
+            "medical_opinion": "Γνωμάτευση",
+            "imaging_report": "Απεικονιστικό",
+            "article": "Άρθρο/Βιβλιογραφία",
+            "insurance": "Ασφαλιστικό",
+            "other": "Άλλο",
+        }
+        doc_lines = []
+        for d in medical_docs[:10]:
+            if isinstance(d, dict):
+                title = d.get("title") or "Χωρίς τίτλο"
+                cat = _cat_labels.get(d.get("category") or "general", d.get("category") or "Γενικό")
+                doc_date = d.get("document_date") or d.get("uploaded_at") or ""
+                notes = d.get("notes") or ""
+                line = f"• {title} [{cat}]"
+                if doc_date:
+                    line += f" — {doc_date[:10]}"
+                if notes:
+                    line += f" — Σημειώσεις: {notes[:100]}"
+                doc_lines.append(line)
+        if doc_lines:
+            parts.append("10. ΑΡΧΕΙΟ ΕΓΓΡΑΦΩΝ:\n" + "\n".join(doc_lines))
+
     if not parts:
         return ""
 
