@@ -56,4 +56,5 @@ def init_db():
     from exams_module.db.base import Base  # noqa: F401
     import exams_module.models.exam_models  # noqa: F401
     import exams_module.models.role_cache_model  # noqa: F401
+    import exams_module.models.medical_document_model  # noqa: F401
     Base.metadata.create_all(bind=engine)
