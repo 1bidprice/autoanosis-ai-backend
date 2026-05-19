@@ -123,6 +123,61 @@ def reprocess_all_documents():
         db.close()
 
 
+@reprocess_bp.route("/reprocess-uuid/<string:document_uuid>", methods=["POST"])
+def reprocess_document_by_uuid(document_uuid):
+    """
+    Re-process a single document by UUID through the AI normalizer.
+
+    Auth: X-Admin-Secret header must match AUTOA_AI_PROXY_SECRET.
+    """
+    if not _require_admin_secret():
+        return jsonify({"error": "unauthorized"}), 401
+
+    gen = get_db()
+    db = next(gen)
+
+    try:
+        doc = db.query(ExamDocument).filter(ExamDocument.id == document_uuid).first()
+        if not doc:
+            return jsonify({"error": "document_not_found", "uuid": document_uuid}), 404
+
+        # Delete existing reports and results
+        old_reports = (
+            db.query(ExamReport)
+            .filter(ExamReport.document_id == doc.id)
+            .all()
+        )
+        for old_report in old_reports:
+            db.query(ExamResult).filter(
+                ExamResult.report_id == old_report.id
+            ).delete()
+            db.delete(old_report)
+        db.flush()
+
+        # Re-process
+        result = process_document(db, doc)
+        db.commit()
+
+        logger.info(
+            "[REPROCESS-UUID] Complete: doc=%s patient=%s norm=%s",
+            doc.id, doc.patient_id, result.get("normalization_status")
+        )
+        return jsonify({
+            "document_id": doc.id,
+            "patient_id": doc.patient_id,
+            "status": "success",
+            "normalization_status": result.get("normalization_status"),
+            "report_ids": result.get("report_ids", []),
+        }), 200
+
+    except Exception as e:
+        db.rollback()
+        logger.error(f"[REPROCESS-UUID] Failed doc {document_uuid}: {e}")
+        return jsonify({"error": "reprocess_failed", "detail": str(e)}), 500
+    finally:
+        db.close()
+
+
 @reprocess_bp.route("/reprocess/<int:document_id>", methods=["POST"])
 def reprocess_single_document(document_id):
     """
