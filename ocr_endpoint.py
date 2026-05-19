@@ -202,7 +202,7 @@ def process_ocr():
                     from exams_module.services.exam_service import process_document as _process
                     _db = next(_get_db())
                     try:
-                        from exams_module.models.exam_models import Document as _Doc
+                        from exams_module.models.exam_models import ExamDocument as _Doc
                         _doc = _db.query(_Doc).filter(_Doc.id == document_id).first()
                         if _doc:
                             _result = _process(_db, _doc)
