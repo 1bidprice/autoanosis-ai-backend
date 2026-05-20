@@ -1884,3 +1884,56 @@ def fix_orphaned_documents():
     except Exception as e:
         logger.error(f"[MIGRATION] fix-orphaned-documents error: {e}")
         return jsonify({"error": str(e)}), 500
+
+# ===========================================================================
+# DEBUG: OCR availability check (TEMPORARY - remove after debugging)
+# ===========================================================================
+@app.route('/debug/ocr-check', methods=['GET'])
+def debug_ocr_check():
+    """Check if OCR libraries are available. Admin only."""
+    admin_secret = request.headers.get("X-Admin-Secret", "").strip()
+    if admin_secret != AUTOA_PROXY_SECRET:
+        return jsonify({"error": "forbidden"}), 403
+    results = {}
+    # Check tesseract
+    try:
+        import subprocess
+        r = subprocess.run(["tesseract", "--version"], capture_output=True, text=True, timeout=5)
+        results["tesseract_version"] = r.stdout.strip() or r.stderr.strip()
+        results["tesseract_available"] = True
+    except Exception as e:
+        results["tesseract_available"] = False
+        results["tesseract_error"] = str(e)
+    # Check pytesseract
+    try:
+        import pytesseract
+        results["pytesseract_available"] = True
+        results["pytesseract_version"] = pytesseract.__version__
+    except Exception as e:
+        results["pytesseract_available"] = False
+        results["pytesseract_error"] = str(e)
+    # Check pdf2image
+    try:
+        import pdf2image
+        results["pdf2image_available"] = True
+    except Exception as e:
+        results["pdf2image_available"] = False
+        results["pdf2image_error"] = str(e)
+    # Check poppler
+    try:
+        import subprocess
+        r = subprocess.run(["pdftoppm", "-v"], capture_output=True, text=True, timeout=5)
+        results["poppler_available"] = True
+        results["poppler_output"] = (r.stdout + r.stderr).strip()[:200]
+    except Exception as e:
+        results["poppler_available"] = False
+        results["poppler_error"] = str(e)
+    # Check fitz
+    try:
+        import fitz
+        results["pymupdf_available"] = True
+        results["pymupdf_version"] = fitz.__version__
+    except Exception as e:
+        results["pymupdf_available"] = False
+        results["pymupdf_error"] = str(e)
+    return jsonify(results)
