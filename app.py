@@ -1936,4 +1936,24 @@ def debug_ocr_check():
     except Exception as e:
         results["pymupdf_available"] = False
         results["pymupdf_error"] = str(e)
+    # Find tesseract binary
+    try:
+        import subprocess
+        r = subprocess.run(["which", "tesseract"], capture_output=True, text=True, timeout=5)
+        results["tesseract_which"] = r.stdout.strip() or "not found"
+        r2 = subprocess.run(["find", "/usr", "-name", "tesseract", "-type", "f"], capture_output=True, text=True, timeout=10)
+        results["tesseract_find"] = r2.stdout.strip()[:500] or "not found"
+    except Exception as e:
+        results["tesseract_find_error"] = str(e)
+    # Check PATH
+    import os
+    results["PATH"] = os.environ.get("PATH", "")
+    results["TESSDATA_PREFIX"] = os.environ.get("TESSDATA_PREFIX", "not set")
+    # Check if running in Docker
+    try:
+        with open("/proc/1/cgroup") as f:
+            cgroup = f.read()
+        results["in_docker"] = "docker" in cgroup or "containerd" in cgroup
+    except Exception:
+        results["in_docker"] = "unknown"
     return jsonify(results)
