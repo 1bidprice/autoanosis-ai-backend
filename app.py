@@ -660,7 +660,7 @@ def build_selective_context(snap: dict, intent: str) -> str:
             "other": "Άλλο",
         }
         doc_lines = []
-        for d in medical_docs[:10]:
+        for idx, d in enumerate(medical_docs[:10], start=1):
             if isinstance(d, dict):
                 title = d.get("title") or d.get("document_title") or "Χωρίς τίτλο"
                 cat_key = d.get("category") or d.get("document_category") or "general"
@@ -668,17 +668,21 @@ def build_selective_context(snap: dict, intent: str) -> str:
                 doc_date = d.get("document_date") or d.get("uploaded_at") or ""
                 notes = d.get("notes") or ""
                 extracted_text = d.get("extracted_text") or ""
-                line = f"• {title} [{cat}]"
+                line = f"=== Έγγραφο #{idx}: {title} ===\nΚατηγορία: {cat}"
                 if doc_date:
-                    line += f" — {doc_date[:10]}"
+                    line += f" | Ημερομηνία: {doc_date[:10]}"
                 if notes:
-                    line += f"\n  Σημειώσεις: {notes[:300]}"
+                    line += f"\nΣημειώσεις: {notes[:300]}"
                 if extracted_text:
                     # Include full extracted text so AI can read the document content
-                    line += f"\n  Περιεχόμενο εγγράφου:\n{extracted_text[:8000]}"
+                    line += f"\n--- Περιεχόμενο εγγράφου ---\n{extracted_text[:8000]}\n--- Τέλος εγγράφου #{idx} ---"
+                else:
+                    line += "\n[Δεν υπάρχει εξαγμένο κείμενο για αυτό το έγγραφο]"
                 doc_lines.append(line)
         if doc_lines:
-            parts.append("10. ΑΡΧΕΙΟ ΕΓΓΡΑΦΩΝ:\n" + "\n\n".join(doc_lines))
+            total = len(doc_lines)
+            header = f"10. ΑΡΧΕΙΟ ΕΓΓΡΑΦΩΝ ({total} έγγραφο{'\u03b1' if total != 1 else ''}):\n"
+            parts.append(header + "\n\n".join(doc_lines))
 
     if not parts:
         return ""
@@ -945,10 +949,16 @@ MEDICAL-SAFE PHRASING — ΑΥΣΤΗΡΩΣ ΥΠΟΧΡΕΩΤΙΚΟ:
 ΑΠΑΓΟΡΕΥΕΤΑΙ να αντιμετωπίζεις ερωτήσεις εγγράφου ως ερωτήσεις έξαρσης — ΔΕΝ εφαρμόζεται το RELAPSE SAFETY RULE εδώ.
 ΥΠΟΧΡΕΩΤΙΚΟ: Διάβασε το πλήρες κείμενο από το πεδίο "Περιεχόμενο εγγράφου" και απάντησε βάσει αυτού.
 
+ΕΙΔΙΚΟΣ ΚΑΝΟΝΑΣ ΓΙΑ ΠΟΛΛΑΠΛΑ ΕΓΓΡΑΦΑ:
+Αν υπάρχουν περισσότερα από 1 έγγραφα και ο χρήστης δεν αναφέρει συγκεκριμένο τίτλο ή αριθμό:
+- Ρώτα πρώτα: "Έχω {N} έγγραφα στο αρχείο σου: [Listing τίτλων και κατηγοριών]. Ποιο εννοείς;"
+- Αν αναφέρεται συγκεκριμένο έγγραφο (π.χ. με λέξη που εμφανίζεται στον τίτλο ή την κατηγορία): ανάλυσε αυτό μόνο.
+- Αν η ερώτηση αφορά σε περιεχόμενο που εμφανίζεται σε περισσότερα εγγραφα (π.χ. "σπλήνα" εμφανίζεται και στον υπέρηχο και στο άρθρο): ανάλυσε και τα δύο και διευκρίνισε τι λέει το καθένα.
+
 ΣΤΑΘΕΡΗ ΔΟΜΗ ΑΠΑΝΤΗΣΗΣ (max 300 λέξεις):
 
 📄 ΕΓΓΡΑΦΟ:
-[Τίτλος, κατηγορία, ημερομηνία εγγράφου αν αναφέρεται]
+[Αριθμός εγγράφου (#1, #2...), τίτλος, κατηγορία, ημερομηνία εγγράφου αν αναφέρεται]
 
 📋 ΚΥΡΙΑ ΕΥΡΗΜΑΤΑ:
 [3-5 bullets με τα σημαντικότερα σημεία που αναφέρει το έγγραφο — συγκεκριμένα, όχι γενικόλογα. Αναφέρε ονόματα διαδικασιών, φαρμάκων, διαγνώσεων που αναγράφονται στο κείμενο.]
