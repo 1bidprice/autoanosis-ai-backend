@@ -41,6 +41,72 @@ ALLOWED_CATEGORIES = {
 
 
 # ---------------------------------------------------------------------------
+# Auto-category detection from extracted text
+# ---------------------------------------------------------------------------
+def _detect_category_from_text(text: str, filename: str) -> str | None:
+    """
+    Heuristically detect document category from extracted text content.
+    Returns a category string or None if undetermined (caller uses 'general').
+    """
+    if not text:
+        return None
+    t = text.lower()
+
+    # Article / scientific publication markers
+    article_markers = [
+        "dear editor", "abstract", "introduction", "conclusion",
+        "references", "doi:", "doi.org", "journal", "pubmed",
+        "case report", "letter to the editor", "keywords:",
+        "corresponding author", "department of", "university of",
+        "golimumab", "adalimumab", "etanercept", "infliximab",
+        "psoriatic arthritis", "rheumatoid arthritis", "inflammatory",
+        "pseudotumour", "pseudotumor", "spleen", "splenic",
+        "orcid", "issn", "volume", "issue", "pages",
+    ]
+    article_score = sum(1 for m in article_markers if m in t)
+    if article_score >= 3:
+        return "article"
+
+    # Discharge summary / hospital letter
+    discharge_markers = [
+        "εξιτήριο", "εξιτηριο", "discharge summary", "discharge letter",
+        "νοσηλεία", "νοσηλεια", "εισαγωγή", "εισαγωγη",
+        "εξιτήριο", "ημερομηνία εισαγωγής", "ημερομηνια εισαγωγης",
+    ]
+    if any(m in t for m in discharge_markers):
+        return "discharge_summary"
+
+    # Imaging report
+    imaging_markers = [
+        "υπερηχογράφημα", "υπερηχογραφημα", "μαγνητική", "μαγνητικη",
+        "αξονική", "αξονικη", "ακτινογραφία", "ακτινογραφια",
+        "ultrasound", "mri", "ct scan", "x-ray", "echography",
+        "απεικόνιση", "απεικονιση", "εύρημα", "ευρημα",
+    ]
+    if any(m in t for m in imaging_markers):
+        return "imaging"
+
+    # Lab result
+    lab_markers = [
+        "αιμοσφαιρίνη", "αιμοσφαιρινη", "λευκοκύτταρα", "λευκοκυτταρα",
+        "αιματοκρίτης", "αιματοκριτης", "crp", "esr", "ferritin",
+        "haemoglobin", "hemoglobin", "platelet", "wbc", "rbc",
+    ]
+    if any(m in t for m in lab_markers):
+        return "lab_result"
+
+    # Referral / prescription
+    referral_markers = [
+        "παραπεμπτικό", "παραπεμπτικο", "παραπομπή", "παραπομπη",
+        "referral", "prescription", "συνταγή", "συνταγη",
+    ]
+    if any(m in t for m in referral_markers):
+        return "referral"
+
+    return None
+
+
+# ---------------------------------------------------------------------------
 # Text extraction helper
 # ---------------------------------------------------------------------------
 def _extract_text_from_bytes(file_bytes: bytes, mime_type: str, filename: str) -> str | None:
@@ -205,6 +271,12 @@ def upload_document():
         extracted_text = _extract_text_from_bytes(file_bytes, mime_type, f.filename)
         if extracted_text:
             logger.info(f"[MEDICAL-DOCS] Extracted {len(extracted_text)} chars from {f.filename}")
+            # Auto-detect category from content if user left it as 'general' (default)
+            if document_category == "general":
+                detected_cat = _detect_category_from_text(extracted_text, f.filename)
+                if detected_cat:
+                    document_category = detected_cat
+                    logger.info(f"[MEDICAL-DOCS] Auto-detected category: {detected_cat} for {f.filename}")
         else:
             logger.info(f"[MEDICAL-DOCS] No text extracted from {f.filename} (mime={mime_type})")
 
