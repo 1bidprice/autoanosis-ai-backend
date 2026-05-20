@@ -505,3 +505,92 @@ def update_document(doc_id):
         return jsonify({"error": str(e)}), 500
     finally:
         db.close()
+
+
+# ---------------------------------------------------------------------------
+# POST /medical-documents/<doc_id>/reprocess
+# ---------------------------------------------------------------------------
+@medical_docs_bp.route("/<doc_id>/reprocess", methods=["POST"])
+def reprocess_document(doc_id):
+    """
+    Re-run text extraction (OCR) on an existing document.
+    Useful when a document was uploaded before OCR was available,
+    or when OCR failed silently on the first upload.
+    Requires X-Identity-Token (owner) OR X-Admin-Secret header.
+    """
+    import os as _os
+    from exams_module.db.database import SessionLocal
+    db = SessionLocal()
+    try:
+        # Auth: identity token (owner) OR admin secret
+        patient_id = None
+        admin_secret = request.headers.get("X-Admin-Secret", "").strip()
+        expected_secret = _os.environ.get("AUTOA_AI_PROXY_SECRET", "")
+        if admin_secret and expected_secret and admin_secret == expected_secret:
+            # Admin access — no patient_id restriction
+            pass
+        else:
+            patient_id, err = _require_identity()
+            if err:
+                return err
+
+        doc = db.query(MedicalDocument).filter(MedicalDocument.id == doc_id).first()
+        if not doc:
+            return jsonify({"error": "document_not_found"}), 404
+
+        # Enforce ownership for non-admin
+        if patient_id is not None and doc.patient_id != patient_id:
+            return jsonify({"error": "forbidden"}), 403
+
+        # Decode stored file data
+        if not doc.file_data:
+            return jsonify({"error": "no_file_data_stored"}), 400
+
+        try:
+            import base64 as _b64
+            file_bytes = _b64.b64decode(doc.file_data)
+        except Exception as e:
+            return jsonify({"error": f"file_decode_failed: {e}"}), 500
+
+        # Re-run extraction
+        logger.info(f"[MEDICAL-DOCS] Reprocessing doc={doc_id} file={doc.original_filename}")
+        extracted_text = _extract_text_from_bytes(
+            file_bytes,
+            doc.mime_type or "application/pdf",
+            doc.original_filename or ""
+        )
+
+        if extracted_text:
+            doc.extracted_text = extracted_text
+            # Auto-detect category if still 'general' or None
+            if doc.document_category in (None, "general"):
+                detected_cat = _detect_category_from_text(extracted_text, doc.original_filename or "")
+                if detected_cat:
+                    doc.document_category = detected_cat
+                    logger.info(f"[MEDICAL-DOCS] Reprocess auto-detected category: {detected_cat}")
+            db.commit()
+            db.refresh(doc)
+            logger.info(f"[MEDICAL-DOCS] Reprocess success: {len(extracted_text)} chars for doc={doc_id}")
+            return jsonify({
+                "success": True,
+                "document_id": doc_id,
+                "text_extracted": True,
+                "chars_extracted": len(extracted_text),
+                "document_category": doc.document_category,
+                "preview": extracted_text[:300],
+            }), 200
+        else:
+            logger.warning(f"[MEDICAL-DOCS] Reprocess produced no text for doc={doc_id}")
+            return jsonify({
+                "success": False,
+                "document_id": doc_id,
+                "text_extracted": False,
+                "message": "OCR produced no text — file may be corrupted or unsupported format",
+            }), 200
+
+    except Exception as e:
+        db.rollback()
+        logger.error(f"[MEDICAL-DOCS] Reprocess error: {e}")
+        return jsonify({"error": str(e)}), 500
+    finally:
+        db.close()
