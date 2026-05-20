@@ -109,6 +109,107 @@ def _detect_category_from_text(text: str, filename: str) -> str | None:
 # ---------------------------------------------------------------------------
 # Text extraction helper
 # ---------------------------------------------------------------------------
+def _ocr_with_vision(file_bytes: bytes, filename: str) -> str | None:
+    """
+    Use OpenAI GPT-4o Vision API to extract text from scanned PDF pages.
+    Converts PDF to images via pdf2image (poppler), then sends each page
+    to GPT-4o as a base64 image for OCR. Works for Greek and English.
+    Falls back to pytesseract if OpenAI is unavailable.
+    """
+    import os, base64, io
+    openai_key = os.environ.get("OPENAI_API_KEY", "")
+    if not openai_key:
+        logger.warning("[MEDICAL-DOCS] OPENAI_API_KEY not set, cannot use Vision OCR")
+        return None
+    try:
+        from pdf2image import convert_from_bytes
+        images = convert_from_bytes(
+            file_bytes,
+            dpi=200,
+            first_page=1,
+            last_page=8,
+            fmt="jpeg"
+        )
+    except Exception as e:
+        logger.warning(f"[MEDICAL-DOCS] pdf2image failed for {filename}: {e}")
+        return None
+
+    if not images:
+        logger.warning(f"[MEDICAL-DOCS] pdf2image returned no pages for {filename}")
+        return None
+
+    try:
+        from openai import OpenAI
+        client = OpenAI(api_key=openai_key)
+    except Exception as e:
+        logger.warning(f"[MEDICAL-DOCS] OpenAI client init failed: {e}")
+        return None
+
+    ocr_pages = []
+    for i, img in enumerate(images):
+        try:
+            # Convert PIL image to JPEG bytes
+            buf = io.BytesIO()
+            img.save(buf, format="JPEG", quality=85)
+            img_b64 = base64.b64encode(buf.getvalue()).decode("utf-8")
+            # Call GPT-4o Vision
+            response = client.chat.completions.create(
+                model="gpt-4o",
+                messages=[
+                    {
+                        "role": "user",
+                        "content": [
+                            {
+                                "type": "text",
+                                "text": (
+                                    "Extract ALL text from this scanned medical document page. "
+                                    "Preserve the original language (Greek or English). "
+                                    "Output ONLY the extracted text, no commentary. "
+                                    "If the page is blank or unreadable, output: [blank page]"
+                                )
+                            },
+                            {
+                                "type": "image_url",
+                                "image_url": {"url": f"data:image/jpeg;base64,{img_b64}", "detail": "high"}
+                            }
+                        ]
+                    }
+                ],
+                max_tokens=2000,
+                timeout=60
+            )
+            page_text = response.choices[0].message.content or ""
+            if page_text.strip() and page_text.strip() != "[blank page]":
+                ocr_pages.append(page_text.strip())
+            logger.info(f"[MEDICAL-DOCS] Vision OCR page {i+1}/{len(images)}: {len(page_text)} chars")
+        except Exception as e:
+            logger.warning(f"[MEDICAL-DOCS] Vision OCR page {i+1} failed: {e}")
+
+    if ocr_pages:
+        text = "\n\n".join(ocr_pages)
+        logger.info(f"[MEDICAL-DOCS] Vision OCR total: {len(text)} chars from {filename}")
+        return text
+    else:
+        logger.warning(f"[MEDICAL-DOCS] Vision OCR produced no text from {filename}")
+        # Fallback: try pytesseract if available
+        try:
+            import pytesseract
+            from pdf2image import convert_from_bytes as _c
+            _images = _c(file_bytes, dpi=200, first_page=1, last_page=8, fmt="jpeg")
+            _pages = []
+            for _img in _images:
+                _t = pytesseract.image_to_string(_img, lang="ell+eng", config="--psm 1")
+                if _t.strip():
+                    _pages.append(_t.strip())
+            if _pages:
+                text = "\n\n".join(_pages)
+                logger.info(f"[MEDICAL-DOCS] Tesseract fallback: {len(text)} chars from {filename}")
+                return text
+        except Exception as _te:
+            logger.warning(f"[MEDICAL-DOCS] Tesseract fallback also failed: {_te}")
+        return None
+
+
 def _extract_text_from_bytes(file_bytes: bytes, mime_type: str, filename: str) -> str | None:
     """
     Extract text content from a file for AI context.
@@ -136,42 +237,8 @@ def _extract_text_from_bytes(file_bytes: bytes, mime_type: str, filename: str) -
 
         # OCR fallback for scanned/image-based PDFs
         if not text:
-            logger.info(f"[MEDICAL-DOCS] No text layer found in {filename}, attempting OCR...")
-            try:
-                import pytesseract
-                from pdf2image import convert_from_bytes
-                from PIL import Image
-                import io
-
-                # Convert PDF pages to images (max 8 pages to limit processing time)
-                images = convert_from_bytes(
-                    file_bytes,
-                    dpi=200,
-                    first_page=1,
-                    last_page=8,
-                    fmt="jpeg"
-                )
-                ocr_pages = []
-                for i, img in enumerate(images):
-                    # OCR with Greek + English
-                    page_text = pytesseract.image_to_string(
-                        img,
-                        lang="ell+eng",
-                        config="--psm 1"
-                    )
-                    if page_text.strip():
-                        ocr_pages.append(page_text.strip())
-                    logger.info(f"[MEDICAL-DOCS] OCR page {i+1}: {len(page_text)} chars")
-
-                if ocr_pages:
-                    text = "\n\n".join(ocr_pages)
-                    logger.info(f"[MEDICAL-DOCS] OCR extracted {len(text)} chars from {filename}")
-                else:
-                    logger.warning(f"[MEDICAL-DOCS] OCR produced no text from {filename}")
-            except ImportError as e:
-                logger.warning(f"[MEDICAL-DOCS] OCR libraries not available: {e}")
-            except Exception as e:
-                logger.warning(f"[MEDICAL-DOCS] OCR failed for {filename}: {e}")
+            logger.info(f"[MEDICAL-DOCS] No text layer found in {filename}, attempting Vision OCR...")
+            text = _ocr_with_vision(file_bytes, filename)
 
     # Plain text files
     elif mime_type in ("text/plain",) or filename.lower().endswith(".txt"):
