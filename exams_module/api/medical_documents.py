@@ -112,7 +112,7 @@ def _detect_category_from_text(text: str, filename: str) -> str | None:
 def _extract_text_from_bytes(file_bytes: bytes, mime_type: str, filename: str) -> str | None:
     """
     Extract text content from a file for AI context.
-    Supports PDF (via PyMuPDF) and plain text files.
+    Supports PDF (via PyMuPDF with OCR fallback for scanned PDFs) and plain text files.
     Returns extracted text (truncated) or None if extraction fails/unsupported.
     """
     text = None
@@ -130,8 +130,48 @@ def _extract_text_from_bytes(file_bytes: bytes, mime_type: str, filename: str) -
             doc.close()
             if pages_text:
                 text = "\n\n".join(pages_text)
+                logger.info(f"[MEDICAL-DOCS] PyMuPDF extracted {len(text)} chars from {filename}")
         except Exception as e:
             logger.warning(f"[MEDICAL-DOCS] PDF text extraction failed: {e}")
+
+        # OCR fallback for scanned/image-based PDFs
+        if not text:
+            logger.info(f"[MEDICAL-DOCS] No text layer found in {filename}, attempting OCR...")
+            try:
+                import pytesseract
+                from pdf2image import convert_from_bytes
+                from PIL import Image
+                import io
+
+                # Convert PDF pages to images (max 8 pages to limit processing time)
+                images = convert_from_bytes(
+                    file_bytes,
+                    dpi=200,
+                    first_page=1,
+                    last_page=8,
+                    fmt="jpeg"
+                )
+                ocr_pages = []
+                for i, img in enumerate(images):
+                    # OCR with Greek + English
+                    page_text = pytesseract.image_to_string(
+                        img,
+                        lang="ell+eng",
+                        config="--psm 1"
+                    )
+                    if page_text.strip():
+                        ocr_pages.append(page_text.strip())
+                    logger.info(f"[MEDICAL-DOCS] OCR page {i+1}: {len(page_text)} chars")
+
+                if ocr_pages:
+                    text = "\n\n".join(ocr_pages)
+                    logger.info(f"[MEDICAL-DOCS] OCR extracted {len(text)} chars from {filename}")
+                else:
+                    logger.warning(f"[MEDICAL-DOCS] OCR produced no text from {filename}")
+            except ImportError as e:
+                logger.warning(f"[MEDICAL-DOCS] OCR libraries not available: {e}")
+            except Exception as e:
+                logger.warning(f"[MEDICAL-DOCS] OCR failed for {filename}: {e}")
 
     # Plain text files
     elif mime_type in ("text/plain",) or filename.lower().endswith(".txt"):

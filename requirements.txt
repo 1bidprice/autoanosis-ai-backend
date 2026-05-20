@@ -12,6 +12,10 @@ requests==2.31.0
 # PDF processing
 pymupdf==1.23.26
 reportlab>=4.0.0
+# OCR for scanned PDFs
+pytesseract>=0.3.10
+pdf2image>=1.17.0
+Pillow>=10.0.0
 
 # ---------------------------------------------------------------------------
 # Exams Ingestion + Normalizer subsystem
