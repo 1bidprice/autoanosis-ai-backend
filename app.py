@@ -1570,6 +1570,48 @@ def chat():
         intent = detect_intent(user_message)
         logger.info(f"[ROUTER] user={user_id} intent={intent} message_preview={user_message[:50]}")
 
+        # --- Inject medical_documents from DB ---
+        # wp_context from WordPress never contains medical_documents
+        # (WordPress doesn't know about them). Fetch from DB and inject.
+        try:
+            from exams_module.db.database import SessionLocal
+            from exams_module.models.medical_document_model import MedicalDocument
+            _db = SessionLocal()
+            try:
+                _docs = (
+                    _db.query(MedicalDocument)
+                    .filter(MedicalDocument.patient_id == int(user_id))
+                    .order_by(MedicalDocument.uploaded_at.desc())
+                    .limit(10)
+                    .all()
+                )
+                medical_docs_list = []
+                for d in _docs:
+                    medical_docs_list.append({
+                        "id": d.id,
+                        "document_title": d.document_title or d.original_filename,
+                        "document_category": d.document_category or "general",
+                        "notes": d.notes or "",
+                        "document_date": d.document_date.isoformat() if d.document_date else None,
+                        "uploaded_at": d.uploaded_at.isoformat() if d.uploaded_at else None,
+                        "mime_type": d.mime_type or "",
+                        "extracted_text": d.extracted_text or "",
+                    })
+                if medical_docs_list:
+                    wp_context = dict(wp_context)  # shallow copy — don't mutate caller's dict
+                    wp_context["medical_documents"] = medical_docs_list
+                    has_text = sum(1 for d in medical_docs_list if d["extracted_text"])
+                    logger.info(
+                        f"[CHAT] Injected {len(medical_docs_list)} medical_documents "
+                        f"({has_text} with extracted_text) for user={user_id}"
+                    )
+                else:
+                    logger.info(f"[CHAT] No medical_documents in DB for user={user_id}")
+            finally:
+                _db.close()
+        except Exception as _doc_fetch_err:
+            logger.warning(f"[CHAT] Could not fetch medical_documents from DB: {_doc_fetch_err}")
+
         # Build selective context
         snapshot = extract_context_from_wp_push(wp_context, user_message)
         if snapshot:
