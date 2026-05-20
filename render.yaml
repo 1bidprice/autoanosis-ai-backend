@@ -1,8 +1,11 @@
 services:
   - type: web
     name: autoanosis-ai-backend
-    env: docker
-    dockerfilePath: ./Dockerfile
+    env: python
+    buildCommand: |
+      apt-get update -qq && apt-get install -y -qq tesseract-ocr tesseract-ocr-eng tesseract-ocr-ell poppler-utils libgl1 libglib2.0-0 2>/dev/null || true
+      pip install -r requirements.txt
+    startCommand: gunicorn --timeout 300 --workers 2 --bind 0.0.0.0:$PORT app:app
     envVars:
       - key: OPENAI_API_KEY
         sync: false
