@@ -681,7 +681,8 @@ def build_selective_context(snap: dict, intent: str) -> str:
                 doc_lines.append(line)
         if doc_lines:
             total = len(doc_lines)
-            header = f"10. ΑΡΧΕΙΟ ΕΓΓΡΑΦΩΝ ({total} έγγραφο{'\u03b1' if total != 1 else ''}):\n"
+            suffix = "α" if total != 1 else ""
+            header = f"10. ΑΡΧΕΙΟ ΕΓΓΡΑΦΩΝ ({total} έγγραφο{suffix}):\n"
             parts.append(header + "\n\n".join(doc_lines))
 
     if not parts:
