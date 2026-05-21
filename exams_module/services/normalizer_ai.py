@@ -126,6 +126,12 @@ def classify_document(text: str) -> Tuple[str, float]:
     low = text.lower()
 
     lab_keywords = [
+        # CGM / Glucose sensor reports
+        "ehba1c", "ehba", "mbg", "tir", "cgm", "libreview", "freestyle libre",
+        "time in range", "χρόνος κάλυψης", "χρονος καλυψης",
+        "αισθητήρας γλυκόζης", "αισθητηρας γλυκοζης",
+        "lbgi", "hbgi", "agp", "μέση γλυκόζη", "μεση γλυκοζη",
+        "φυσιολογικό", "χαμηλό", "υψηλό",
         # English
         "crp", "esr", "tsh", "vitamin d", "ferritin", "wbc", "rbc", "hgb",
         "plt", "hemoglobin", "hematocrit", "cholesterol", "triglycerides",

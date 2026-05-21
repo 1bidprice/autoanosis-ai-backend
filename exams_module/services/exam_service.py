@@ -349,6 +349,7 @@ def process_document(db: Session, doc):
             "lab_panel": "Αιματολογικές Εξετάσεις",
             "urine": "Ανάλυση Ούρων",
             "imaging": "Απεικονιστική Εξέταση",
+            "cgm_report": "Αναφορά Αισθητήρα Γλυκόζης",
         }
         display_name = _DISPLAY_MAP.get(parsed.exam_type, None)
 

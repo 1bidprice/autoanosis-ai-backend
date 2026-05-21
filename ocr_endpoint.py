@@ -117,7 +117,7 @@ def process_ocr():
         if content_type == "application/pdf" or filename.endswith(".pdf"):
             raw_text, ocr_type, ocr_confidence = _extract_pdf(file_data)
         elif content_type.startswith("image/"):
-            raw_text, ocr_confidence = _ocr_image_hybrid(file_data, content_type)
+            raw_text, ocr_confidence = _ocr_image_hybrid(file_data, content_type, filename=filename)
             ocr_type = "image"
         else:
             return jsonify({
@@ -343,7 +343,82 @@ def _assess_image_quality(image_bytes: bytes) -> tuple:
         return "good", {"reason": "assessment_failed", "error": str(e)}
 
 
-def _ocr_image_hybrid(image_bytes: bytes, content_type: str) -> tuple:
+# CGM/Glucose sensor report keywords — detect from filename or image content
+CGM_FILENAME_KEYWORDS = [
+    "libreview", "libre", "freestylelibre", "freestyle", "cgm", "sensor",
+    "glucos", "glucose", "tir", "ehba1c", "agp", "τάσεις", "taseis",
+    "αισθητήρας", "αισθητηρας", "ζαχάρου", "zacharou", "διαβήτης", "diabitis",
+]
+
+
+def _is_cgm_image(filename: str) -> bool:
+    """Heuristic: check if filename suggests a CGM/glucose sensor report screenshot."""
+    fn = (filename or "").lower()
+    return any(k in fn for k in CGM_FILENAME_KEYWORDS)
+
+
+def _ocr_cgm_chart(image_bytes: bytes, content_type: str, model: str = "gpt-4o") -> str:
+    """
+    Specialized extraction for CGM/glucose sensor report screenshots.
+    Instead of verbatim text copy, asks GPT to describe and extract all numeric data.
+    """
+    try:
+        b64 = base64.b64encode(image_bytes).decode("utf-8")
+        response = client.chat.completions.create(
+            model=model,
+            messages=[
+                {
+                    "role": "system",
+                    "content": (
+                        "Είσαι ένα σύστημα εξαγωγής δεδομένων από αναφορές αισθητήρα γλυκόζης (CGM). "
+                        "Εξάγεις ΟΛΕΣ τις τιμές και μετρήσεις που εμφανίζονται στην εικόνα. "
+                        "Επιστρέφεις δομημένο κείμενο με όλες τις αριθμητικές τιμές."
+                    ),
+                },
+                {
+                    "role": "user",
+                    "content": [
+                        {
+                            "type": "text",
+                            "text": (
+                                "Αυτή είναι μια εικόνα από αναφορά αισθητήρα γλυκόζης (CGM/LibreView/FreeStyle Libre).\n\n"
+                                "Εξάγαγε ΟΛΑ τα δεδομένα που βλέπεις, συμπεριλαμβανομένων:\n"
+                                "- Χρονική περίοδος (από - έως)\n"
+                                "- Χρόνος κάλυψης CGM (%)\n"
+                                "- Αριθμός αποτελεσμάτων αισθητήρα\n"
+                                "- eHbA1c (%)\n"
+                                "- MBG / Μέση γλυκόζη (mg/dL)\n"
+                                "- Time in Range (TIR): Φυσιολογικό (70-180 mg/dL) %, Υψηλό (>180) %, Χαμηλό (<70) %\n"
+                                "- LBGI (Δείκτης Χαμηλής ΓΑ)\n"
+                                "- HBGI (Δείκτης Υψηλής ΓΑ)\n"
+                                "- Οποιεσδήποτε άλλες τιμές ή στατιστικά που εμφανίζονται\n\n"
+                                "Μορφοποίησε την απάντηση ως λίστα: 'Παράμετρος: Τιμή Μονάδα'\n"
+                                "Παράδειγμα:\n"
+                                "Χρόνος κάλυψης CGM: 96%\n"
+                                "eHbA1c: 4.8%\n"
+                                "MBG: 92 mg/dL\n"
+                                "TIR Φυσιολογικό: 93.1%\n"
+                                "TIR Χαμηλό: 6.7%\n"
+                                "TIR Υψηλό: 0.2%\n"
+                                "LBGI: 3\n"
+                            ),
+                        },
+                        {
+                            "type": "image_url",
+                            "image_url": {"url": f"data:{content_type};base64,{b64}"},
+                        },
+                    ],
+                }
+            ],
+            max_tokens=1500,
+        )
+        return response.choices[0].message.content.strip()
+    except Exception as e:
+        logger.error("[OCR] CGM Vision error: %s", e)
+        return ""
+
+
+def _ocr_image_hybrid(image_bytes: bytes, content_type: str, filename: str = "") -> tuple:
     """
     Hybrid OCR pipeline:
     0. Pass 0: Image quality assessment (Pillow, zero AI cost)
@@ -354,7 +429,15 @@ def _ocr_image_hybrid(image_bytes: bytes, content_type: str) -> tuple:
 
     Returns (text, confidence) where confidence is "high" | "medium" | "low"
     """
-    # Pass 0: Image quality assessment (zero cost)
+    # Pass 0a: CGM/Glucose sensor detection — use specialized chart extraction prompt
+    if _is_cgm_image(filename):
+        logger.info("[OCR] Detected CGM/sensor image from filename — using specialized CGM prompt")
+        cgm_text = _ocr_cgm_chart(image_bytes, content_type, model="gpt-4o")
+        if cgm_text and len(cgm_text.strip()) > 20:
+            return cgm_text, "high"
+        logger.warning("[OCR] CGM extraction returned empty — falling back to standard OCR")
+
+    # Pass 0b: Image quality assessment (zero cost)
     quality, quality_metrics = _assess_image_quality(image_bytes)
 
     if quality == "poor":
