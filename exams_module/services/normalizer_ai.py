@@ -202,6 +202,7 @@ CRITICAL RULES:
 13. exam_date must always be returned as ISO date: YYYY-MM-DD. Never return DD/MM/YYYY, MM/DD/YYYY, DD-MM-YYYY, or localized date strings. If the date is ambiguous or cannot be confidently normalized, return null.
 14. For age-stratified or time-stratified reference ranges (e.g., "3.5-5.0 (>60ετη: 3.4-4.8)", "Πρωί 7-10πμ: 133-537 / Απόγευμα 4-8μμ: 68-327", "8.8-46.3 Χειμερινή / 15.7-60.3 Καλοκαιρινή"), ALWAYS use the FIRST / most general range as reference_low and reference_high. Store the full raw string in reference_text. Never use an age-specific or time-specific sub-range as the primary range unless it is the only one given.
 15. For multi-page documents where the patient header (ΟΝΟΜΑΤΕΠΩΝΥΜΟ, ΗΜΕΡ.ΕΞΕΤΑΣΗΣ) repeats on each page, treat the entire document as ONE exam from the date on the first page. Do not create duplicate metadata entries.
+16. For CGM/glucose sensor reports (containing eHbA1c, MBG, TIR, LBGI, HBGI, LibreView, FreeStyle Libre, αισθητήρας γλυκόζης), set document_type to "cgm_report". These metrics do NOT have traditional reference ranges — set reference_low and reference_high to null and abnormal_flag to "unknown".
 
 Respond with ONLY valid JSON matching this exact schema:
 {
@@ -209,7 +210,7 @@ Respond with ONLY valid JSON matching this exact schema:
     "exam_date": "YYYY-MM-DD or null",
     "lab_name": "string or null",
     "ordering_doctor": "string or null",
-    "document_type": "lab_panel | imaging_report | mixed_panel",
+    "document_type": "lab_panel | imaging_report | mixed_panel | cgm_report",
     "sections_detected": ["string"]
   },
   "results": [
@@ -518,10 +519,34 @@ def post_validate_results(raw_results: list) -> Tuple[List[ParsedResult], Dict]:
 # Normalization Status Decision
 # ---------------------------------------------------------------------------
 
-def _decide_normalization_status(results: List[ParsedResult], summary: Dict) -> Tuple[str, float]:
+# CGM metric names that naturally lack units/reference ranges — do not penalize
+_CGM_METRIC_NAMES = {
+    "tir", "time in range", "χρόνος κάλυψης", "χρονος καλυψης",
+    "ehba1c", "ehba", "mbg", "μέση γλυκόζη", "μεση γλυκοζη",
+    "lbgi", "hbgi", "agp", "χρόνος στόχος", "χρονος στοχος",
+    "φυσιολογικό", "χαμηλό", "υψηλό",
+    "αισθητήρας γλυκόζης", "αισθητηρας γλυκοζης",
+}
+
+
+def _is_cgm_text(text: str) -> bool:
+    """Return True if the text looks like a CGM/glucose sensor report."""
+    low = text.lower()
+    cgm_signals = [
+        "ehba1c", "ehba", "mbg", "tir", "cgm", "libreview", "freestyle libre",
+        "time in range", "χρόνος κάλυψης", "χρονος καλυψης",
+        "αισθητήρας γλυκόζης", "αισθητηρας γλυκοζης",
+        "lbgi", "hbgi", "agp",
+    ]
+    return sum(1 for k in cgm_signals if k in low) >= 2
+
+
+def _decide_normalization_status(results: List[ParsedResult], summary: Dict, is_cgm: bool = False) -> Tuple[str, float]:
     """
     Decide normalization_status and confidence_score based on validation results.
     Returns (status, confidence).
+    CGM reports get a relaxed scoring path because TIR%, eHbA1c%, MBG etc.
+    naturally lack traditional lab reference ranges and units.
     """
     total = summary.get("total_extracted", 0)
     valid = summary.get("valid", 0)
@@ -535,6 +560,12 @@ def _decide_normalization_status(results: List[ParsedResult], summary: Dict) -> 
 
     # Calculate quality ratio
     quality_ratio = valid / max(len(results), 1)
+
+    # CGM reports: use relaxed scoring — missing units/refs are expected for TIR%, eHbA1c%, MBG
+    if is_cgm:
+        if quality_ratio >= 0.5:
+            return "auto_verified", round(0.80 + quality_ratio * 0.10, 4)
+        return "auto_verified", round(0.75, 4)
 
     # High quality: >80% valid, few missing units/refs
     if quality_ratio >= 0.8 and missing_units <= 2 and missing_refs <= len(results) * 0.3:
@@ -584,6 +615,15 @@ def ai_normalize_lab(text: str) -> Optional[ParsedReport]:
     doc_type = metadata.get("document_type", "lab_panel")
     sections = metadata.get("sections_detected", [])
 
+    # Step 2b: Detect if this is a CGM report (by GPT-returned type OR text heuristic)
+    # This ensures correct exam_type even if GPT didn't return "cgm_report"
+    is_cgm = (doc_type == "cgm_report") or _is_cgm_text(
+        " ".join(r.get("display_name", "") for r in ai_response.get("results", []))
+    )
+    if is_cgm and doc_type not in ("cgm_report",):
+        logger.info("[AI_NORMALIZER] CGM text detected via heuristic — overriding doc_type to cgm_report")
+        doc_type = "cgm_report"
+
     # Step 3: Post-validate all results
     raw_results = ai_response.get("results", [])
     validated_results, validation_summary = post_validate_results(raw_results)
@@ -598,8 +638,8 @@ def ai_normalize_lab(text: str) -> Optional[ParsedReport]:
             review_required=imp.get("severity_flag") in ("attention", "critical"),
         ))
 
-    # Step 5: Decide normalization status
-    norm_status, confidence = _decide_normalization_status(validated_results, validation_summary)
+    # Step 5: Decide normalization status (pass is_cgm for relaxed scoring)
+    norm_status, confidence = _decide_normalization_status(validated_results, validation_summary, is_cgm=is_cgm)
 
     # Step 6: Build source lineage for full traceability
     source_lineage = {
@@ -614,7 +654,7 @@ def ai_normalize_lab(text: str) -> Optional[ParsedReport]:
     }
 
     return ParsedReport(
-        exam_type=doc_type if doc_type != "mixed_panel" else "lab_panel",
+        exam_type=doc_type if doc_type not in ("mixed_panel",) else "lab_panel",
         exam_category="lab",
         confidence_score=confidence,
         normalization_status=norm_status,
@@ -751,8 +791,9 @@ def _merge_parsed_reports(reports: list) -> Optional['ParsedReport']:
     base.validation_summary['total_extracted'] = total_extracted + (base.validation_summary.get('total_extracted', 0))
     base.source_lineage['chunked'] = str(len(valid))
 
-    # Recalculate confidence and status
-    norm_status, confidence = _decide_normalization_status(deduped, base.validation_summary)
+    # Recalculate confidence and status (detect CGM from merged exam_type)
+    is_cgm_merged = getattr(base, 'exam_type', '') == 'cgm_report'
+    norm_status, confidence = _decide_normalization_status(deduped, base.validation_summary, is_cgm=is_cgm_merged)
     base.normalization_status = norm_status
     base.confidence_score = confidence
 
