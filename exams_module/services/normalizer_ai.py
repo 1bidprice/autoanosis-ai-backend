@@ -203,6 +203,16 @@ CRITICAL RULES:
 14. For age-stratified or time-stratified reference ranges (e.g., "3.5-5.0 (>60ετη: 3.4-4.8)", "Πρωί 7-10πμ: 133-537 / Απόγευμα 4-8μμ: 68-327", "8.8-46.3 Χειμερινή / 15.7-60.3 Καλοκαιρινή"), ALWAYS use the FIRST / most general range as reference_low and reference_high. Store the full raw string in reference_text. Never use an age-specific or time-specific sub-range as the primary range unless it is the only one given.
 15. For multi-page documents where the patient header (ΟΝΟΜΑΤΕΠΩΝΥΜΟ, ΗΜΕΡ.ΕΞΕΤΑΣΗΣ) repeats on each page, treat the entire document as ONE exam from the date on the first page. Do not create duplicate metadata entries.
 16. For CGM/glucose sensor reports (containing eHbA1c, MBG, TIR, LBGI, HBGI, LibreView, FreeStyle Libre, αισθητήρας γλυκόζης), set document_type to "cgm_report". These metrics do NOT have traditional reference ranges — set reference_low and reference_high to null and abnormal_flag to "unknown".
+17. For CGM reports, use EXACTLY these standardized display_name values (do NOT translate or expand them):
+    - "eHbA1c" (not "Εκτιμώμενη HbA1c" or any other variant)
+    - "MBG" (not "Μέση Γλυκόζη" or "Mean Blood Glucose")
+    - "Χρόνος κάλυψης CGM" (not "Χρόνος Κάλυψης" alone)
+    - "TIR Φυσιολογικό" (not "Time in Range (TIR) (χρόνος εντός εύρους...)" or "Time in Range Φυσιολογικό")
+    - "TIR Χαμηλό" (not "Χαμηλό" alone or "Time in Range Χαμηλό")
+    - "TIR Υψηλό" (not "Υψηλό" alone or "Time in Range Υψηλό")
+    - "LBGI" (Δείκτης Χαμηλής ΓΑ)
+    - "HBGI" (Δείκτης Υψηλής ΓΑ)
+    For TIR metrics: reference_text should be the range description (e.g. "70 - 180 mg/dL"), reference_low/high should reflect the glucose range boundaries, NOT the percentage boundaries.
 
 Respond with ONLY valid JSON matching this exact schema:
 {
@@ -423,6 +433,71 @@ def post_validate_results(raw_results: list) -> Tuple[List[ParsedResult], Dict]:
         if not display_name:
             summary["rejected"] += 1
             continue
+
+        # CGM display_name normalization — standardize names regardless of GPT output
+        _cgm_name_map = {
+            # eHbA1c variants
+            "εκτιμώμενη hba1c": "eHbA1c", "εκτιμωμενη hba1c": "eHbA1c",
+            "estimated hba1c": "eHbA1c", "ehba1c": "eHbA1c",
+            # MBG variants
+            "μέση γλυκόζη": "MBG", "μεση γλυκοζη": "MBG",
+            "mean blood glucose": "MBG", "mean glucose": "MBG",
+            "μέση τιμή γλυκόζης": "MBG", "μεση τιμη γλυκοζης": "MBG",
+            # TIR Φυσιολογικό variants
+            "time in range (tir) φυσιολογικό": "TIR Φυσιολογικό",
+            "time in range (tir) (χρόνος εντός εύρους)": "TIR Φυσιολογικό",
+            "time in range (tir) (χρονος εντος ευρους)": "TIR Φυσιολογικό",
+            "time in range φυσιολογικό": "TIR Φυσιολογικό",
+            "time in range φυσιολογικο": "TIR Φυσιολογικό",
+            "tir φυσιολογικό": "TIR Φυσιολογικό",
+            "tir φυσιολογικο": "TIR Φυσιολογικό",
+            "tir (φυσιολογικό)": "TIR Φυσιολογικό",
+            "φυσιολογικό (70-180 mg/dl)": "TIR Φυσιολογικό",
+            "φυσιολογικο (70-180 mg/dl)": "TIR Φυσιολογικό",
+            # TIR Χαμηλό variants
+            "time in range (tir) χαμηλό": "TIR Χαμηλό",
+            "time in range χαμηλό": "TIR Χαμηλό",
+            "time in range χαμηλο": "TIR Χαμηλό",
+            "tir χαμηλό": "TIR Χαμηλό",
+            "tir χαμηλο": "TIR Χαμηλό",
+            "tir (χαμηλό)": "TIR Χαμηλό",
+            "χαμηλό (<70 mg/dl)": "TIR Χαμηλό",
+            "χαμηλο (<70 mg/dl)": "TIR Χαμηλό",
+            "χαμηλό": "TIR Χαμηλό",
+            "χαμηλο": "TIR Χαμηλό",
+            # TIR Υψηλό variants
+            "time in range (tir) υψηλό": "TIR Υψηλό",
+            "time in range υψηλό": "TIR Υψηλό",
+            "time in range υψηλο": "TIR Υψηλό",
+            "tir υψηλό": "TIR Υψηλό",
+            "tir υψηλο": "TIR Υψηλό",
+            "tir (υψηλό)": "TIR Υψηλό",
+            "υψηλό (>180 mg/dl)": "TIR Υψηλό",
+            "υψηλο (>180 mg/dl)": "TIR Υψηλό",
+            "υψηλό": "TIR Υψηλό",
+            "υψηλο": "TIR Υψηλό",
+            # Χρόνος κάλυψης CGM variants
+            "χρόνος κάλυψης": "Χρόνος κάλυψης CGM",
+            "χρονος καλυψης": "Χρόνος κάλυψης CGM",
+            "χρόνος κάλυψης cgm": "Χρόνος κάλυψης CGM",
+            "cgm coverage": "Χρόνος κάλυψης CGM",
+            "sensor coverage": "Χρόνος κάλυψης CGM",
+            "αποτελέσματα αισθητήρα": "Αριθμός αποτελεσμάτων αισθητήρα",
+            "αποτελεσματα αισθητηρα": "Αριθμός αποτελεσμάτων αισθητήρα",
+        }
+        dn_lower = display_name.lower().strip()
+        # Exact match first, then prefix/contains match for TIR
+        if dn_lower in _cgm_name_map:
+            display_name = _cgm_name_map[dn_lower]
+        elif dn_lower.startswith("time in range") and "φυσιολογικ" in dn_lower:
+            display_name = "TIR Φυσιολογικό"
+        elif dn_lower.startswith("time in range") and "χαμηλ" in dn_lower:
+            display_name = "TIR Χαμηλό"
+        elif dn_lower.startswith("time in range") and "υψηλ" in dn_lower:
+            display_name = "TIR Υψηλό"
+        elif dn_lower.startswith("time in range") and "tir" not in dn_lower:
+            # Generic "Time in Range" without qualifier → TIR Φυσιολογικό
+            display_name = "TIR Φυσιολογικό"
 
         # Duplicate detection (case-insensitive)
         name_key = display_name.lower()

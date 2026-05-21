@@ -360,7 +360,10 @@ def _is_cgm_image(filename: str) -> bool:
 def _ocr_cgm_chart(image_bytes: bytes, content_type: str, model: str = "gpt-4o") -> str:
     """
     Specialized extraction for CGM/glucose sensor report screenshots.
-    Instead of verbatim text copy, asks GPT to describe and extract all numeric data.
+    Handles ALL CGM app screen types (Trends, Home, Glucose, History, etc.)
+    and ALL CGM device brands (LibreView, FreeStyle Libre, Dexcom, Medtronic,
+    Accu-Chek, Contour, Omada, mySugr, etc.).
+    Extracts ALL numeric data from charts, sliders, pie charts, tiles, and text.
     """
     try:
         b64 = base64.b64encode(image_bytes).decode("utf-8")
@@ -370,9 +373,10 @@ def _ocr_cgm_chart(image_bytes: bytes, content_type: str, model: str = "gpt-4o")
                 {
                     "role": "system",
                     "content": (
-                        "Είσαι ένα σύστημα εξαγωγής δεδομένων από αναφορές αισθητήρα γλυκόζης (CGM). "
-                        "Εξάγεις ΟΛΕΣ τις τιμές και μετρήσεις που εμφανίζονται στην εικόνα. "
-                        "Επιστρέφεις δομημένο κείμενο με όλες τις αριθμητικές τιμές."
+                        "Είσαι ένα εξειδικευμένο σύστημα εξαγωγής δεδομένων γλυκόζης και διαβήτη. "
+                        "Αναγνωρίζεις κάθε οθόνη CGM (LibreView, FreeStyle Libre, Dexcom, Medtronic, Accu-Chek, Contour, mySugr, οποιαδήποτε άλλη). "
+                        "Εξάγεις ΟΛΑ τα ορατά νούμερα από κάθε στοιχείο UI: tiles, charts, pie charts, sliders, gauges, γραφήματα, κείμενο. "
+                        "ΔΕΝ παραλείπεις κανένα δεδομένο που είναι ορατό."
                     ),
                 },
                 {
@@ -381,26 +385,25 @@ def _ocr_cgm_chart(image_bytes: bytes, content_type: str, model: str = "gpt-4o")
                         {
                             "type": "text",
                             "text": (
-                                "Αυτή είναι μια εικόνα από αναφορά αισθητήρα γλυκόζης (CGM/LibreView/FreeStyle Libre).\n\n"
-                                "Εξάγαγε ΟΛΑ τα δεδομένα που βλέπεις, συμπεριλαμβανομένων:\n"
-                                "- Χρονική περίοδος (από - έως)\n"
-                                "- Χρόνος κάλυψης CGM (%)\n"
-                                "- Αριθμός αποτελεσμάτων αισθητήρα\n"
-                                "- eHbA1c (%)\n"
-                                "- MBG / Μέση γλυκόζη (mg/dL)\n"
-                                "- Time in Range (TIR): Φυσιολογικό (70-180 mg/dL) %, Υψηλό (>180) %, Χαμηλό (<70) %\n"
-                                "- LBGI (Δείκτης Χαμηλής ΓΑ)\n"
-                                "- HBGI (Δείκτης Υψηλής ΓΑ)\n"
-                                "- Οποιεσδήποτε άλλες τιμές ή στατιστικά που εμφανίζονται\n\n"
-                                "Μορφοποίησε την απάντηση ως λίστα: 'Παράμετρος: Τιμή Μονάδα'\n"
-                                "Παράδειγμα:\n"
+                                "Αυτή είναι μια οθόνη από εφαρμογή CGM/γλυκόζης/διαβήτη.\n\n"
+                                "Εξάγαγε ΟΛΑ τα δεδομένα που βλέπεις στην οθόνη. Μορφοποίησε ως λίστα: 'Παράμετρος: Τιμή Μονάδα'\n\n"
+                                "ΚΑΝΟΝΕΣ ΕΞΑΓΩΓΗΣ:\n"
+                                "1. Εξάγαγε ΚΑΘΕ ορατό νούμερο με το label του\n"
+                                "2. Για pie charts: κάθε τμήμα με ποσοστό + label (TIR Φυσιολογικό, TIR Χαμηλό, TIR Υψηλό)\n"
+                                "3. Για sliders/gauges (LBGI, HBGI κλπ): τρέχουσα τιμή + όρια\n"
+                                "4. Για tiles/κάρτες (eHbA1c, MBG, Χρόνος κάλυψης CGM): τίτλος + τιμή + μονάδα\n"
+                                "5. Χρονική περίοδος αν είναι ορατή\n"
+                                "6. Οποιαδήποτε άλλη μέτρηση ή στατιστικό\n\n"
+                                "ΠΑΡΑΔΕΙΓΜΑ ΣΩΣΤΗΣ ΕΞΑΓΩΓΗΣ:\n"
                                 "Χρόνος κάλυψης CGM: 96%\n"
+                                "Αριθμός αποτελεσμάτων αισθητήρα: 1942\n"
                                 "eHbA1c: 4.8%\n"
                                 "MBG: 92 mg/dL\n"
-                                "TIR Φυσιολογικό: 93.1%\n"
-                                "TIR Χαμηλό: 6.7%\n"
-                                "TIR Υψηλό: 0.2%\n"
-                                "LBGI: 3\n"
+                                "TIR Φυσιολογικό: 93.1% (όρια: 70-180 mg/dL)\n"
+                                "TIR Χαμηλό: 6.7% (όριο: <70 mg/dL)\n"
+                                "TIR Υψηλό: 0.2% (όριο: >180 mg/dL)\n"
+                                "LBGI: 3 (όρια: 0-5, τρέχουσα τιμή: 3, κατηγορία: Μεσαίο)\n"
+                                "Χρονική περίοδος: 01/05/2026 - 07/05/2026\n"
                             ),
                         },
                         {
@@ -410,7 +413,7 @@ def _ocr_cgm_chart(image_bytes: bytes, content_type: str, model: str = "gpt-4o")
                     ],
                 }
             ],
-            max_tokens=1500,
+            max_tokens=2000,
         )
         return response.choices[0].message.content.strip()
     except Exception as e:
@@ -443,17 +446,17 @@ def _ocr_image_hybrid(image_bytes: bytes, content_type: str, filename: str = "")
     if quality == "poor":
         reason = quality_metrics.get("reason", "unknown")
         logger.info("[OCR] Pass 0: Poor quality (%s) - using gpt-4o directly", reason)
-        text_4o = _ocr_strict_verbatim(image_bytes, content_type, model="gpt-4o")
+        text_4o = _ocr_smart_extract(image_bytes, content_type, model="gpt-4o")
         if text_4o:
             return text_4o, "medium"  # medium: image quality was poor
         return "", "low"
 
-    # Pass 1: Strict verbatim transcription (cheap, good quality images only)
-    text_mini = _ocr_strict_verbatim(image_bytes, content_type, model="gpt-4o-mini")
+    # Pass 1: Smart extraction — detects image type and uses appropriate strategy
+    text_mini = _ocr_smart_extract(image_bytes, content_type, model="gpt-4o-mini")
 
     if not text_mini:
         logger.warning("[OCR] gpt-4o-mini returned empty - escalating to gpt-4o")
-        text_4o = _ocr_strict_verbatim(image_bytes, content_type, model="gpt-4o")
+        text_4o = _ocr_smart_extract(image_bytes, content_type, model="gpt-4o")
         return text_4o or "", "low"
 
     # Pass 2: Verification - check for high-risk OCR errors
@@ -461,7 +464,7 @@ def _ocr_image_hybrid(image_bytes: bytes, content_type: str, filename: str = "")
 
     if risk_detected:
         logger.warning("[OCR] Pass 2: Risk detected (%s) - escalating to gpt-4o", risk_reason)
-        text_4o = _ocr_strict_verbatim(image_bytes, content_type, model="gpt-4o")
+        text_4o = _ocr_smart_extract(image_bytes, content_type, model="gpt-4o")
         if text_4o:
             logger.info("[OCR] gpt-4o escalation successful")
             return text_4o, "medium"
@@ -470,10 +473,82 @@ def _ocr_image_hybrid(image_bytes: bytes, content_type: str, filename: str = "")
             return text_mini, "low"
 
     return text_mini, "high"
+def _ocr_smart_extract(image_bytes: bytes, content_type: str, model: str) -> str:
+    """
+    Smart medical image extraction.
+    Detects image type (text document vs graphical/chart-based) and uses
+    the appropriate extraction strategy automatically.
+    Handles: lab reports, ultrasound reports, app screenshots with charts,
+    sliders, pie charts, glucose monitors, blood pressure apps, any medical UI.
+    """
+    try:
+        b64 = base64.b64encode(image_bytes).decode("utf-8")
+        response = client.chat.completions.create(
+            model=model,
+            messages=[
+                {
+                    "role": "system",
+                    "content": (
+                        "Είσαι ένα εξειδικευμένο σύστημα εξαγωγής ιατρικών δεδομένων. "
+                        "Αναγνωρίζεις αυτόματα τον τύπο της εικόνας και εξάγεις ΟΛΑ τα δεδομένα με τον κατάλληλο τρόπο. "
+                        "Για κείμενο: αντιγράφεις ακριβώς. "
+                        "Για γραφήματα/charts/sliders/pie charts: εξάγεις τις αριθμητικές τιμές που απεικονίζονται. "
+                        "ΔΕΝ παραλείπεις κανένα δεδομένο που είναι ορατό στην εικόνα."
+                    ),
+                },
+                {
+                    "role": "user",
+                    "content": [
+                        {
+                            "type": "text",
+                            "text": (
+                                "Εξάγαγε ΟΛΑ τα ιατρικά δεδομένα από αυτή την εικόνα.\n\n"
+                                "ΒΗΜΑ 1 — Αναγνώρισε τον τύπο εικόνας:\n"
+                                "  A) Έγγραφο με κείμενο (εξετάσεις, αναφορές, αποτελέσματα σε μορφή κειμένου)\n"
+                                "  B) Screenshot εφαρμογής/συσκευής με γραφικά δεδομένα (charts, γραφήματα, sliders, pie charts, gauges)\n"
+                                "  C) Μικτό (κείμενο + γραφικά)\n\n"
+                                "ΒΗΜΑ 2 — Εξαγωγή ανάλογα με τον τύπο:\n\n"
+                                "Αν ΤΥΠΟΣ A (κείμενο):\n"
+                                "  - Αντέγραψε ΑΚΡΙΒΩΣ κάθε λέξη, αριθμό, μονάδα, ημερομηνία\n"
+                                "  - ΜΗΝ αλλάζεις ιατρικούς όρους, ΜΗΝ διορθώνεις ορθογραφία\n"
+                                "  - Περίλαβε: ονόματα εξετάσεων, τιμές, μονάδες, φυσιολογικά όρια, σχόλια\n\n"
+                                "Αν ΤΥΠΟΣ B (γραφικά/app screenshot):\n"
+                                "  - Εξάγαγε ΚΑΘΕ ορατό νούμερο με το αντίστοιχο label/όνομα\n"
+                                "  - Για pie charts: εξάγαγε κάθε τμήμα με ποσοστό και label\n"
+                                "  - Για sliders/gauges: εξάγαγε την τρέχουσα τιμή και τα όρια\n"
+                                "  - Για γραφήματα χρόνου: εξάγαγε min/max/μέσο αν είναι ορατά\n"
+                                "  - Για κάρτες/tiles: εξάγαγε τίτλο + τιμή + μονάδα\n"
+                                "  - Μορφοποίησε ως: 'Παράμετρος: Τιμή Μονάδα'\n\n"
+                                "Αν ΤΥΠΟΣ C (μικτό):\n"
+                                "  - Εφάρμοσε και τις δύο στρατηγικές\n"
+                                "  - Πρώτα το κείμενο, μετά τα γραφικά δεδομένα\n\n"
+                                "ΚΡΙΣΙΜΟΙ ΚΑΝΟΝΕΣ:\n"
+                                "  - ΜΗΝ παραλείπεις κανένα ορατό νούμερο ή μέτρηση\n"
+                                "  - Περίλαβε ημερομηνίες και χρονικές περιόδους\n"
+                                "  - Αν κάτι δεν διαβάζεται, γράψε [ΑΔΥΝΑΤΗ ΑΝΑΓΝΩΣΗ]\n"
+                                "  - Επέστρεψε ΜΟΝΟ τα δεδομένα, χωρίς εισαγωγικές φράσεις"
+                            ),
+                        },
+                        {
+                            "type": "image_url",
+                            "image_url": {"url": f"data:{content_type};base64,{b64}"},
+                        },
+                    ],
+                }
+            ],
+            max_tokens=2500,
+        )
+        return response.choices[0].message.content.strip()
+    except Exception as e:
+        logger.error("[OCR] %s smart_extract error: %s", model, e)
+        return ""
+
+
 def _ocr_strict_verbatim(image_bytes: bytes, content_type: str, model: str) -> str:
     """
     OCR with strict verbatim transcription prompt.
     No interpretation, no correction, no medical inference.
+    KEPT for backward compatibility — _ocr_smart_extract is now preferred.
     """
     try:
         b64 = base64.b64encode(image_bytes).decode("utf-8")
