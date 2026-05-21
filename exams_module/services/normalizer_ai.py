@@ -193,7 +193,7 @@ CRITICAL RULES:
 4. Preserve the EXACT unit as written in the document (e.g., "x10³/μL", "g/dL", "nmol/L").
 5. Parse reference ranges into separate low and high numbers. If only one bound exists, set the other to null. Keep the raw reference string in reference_text.
 6. Determine abnormal_flag: "high" if value > reference_high, "low" if value < reference_low, "normal" if within range, "unknown" if no reference range available.
-7. Assign clinical_group from: hematology, biochemistry, endocrine, lipids, metabolic, renal, hepatic, inflammation, iron, coagulation, urinalysis, immunology, tumor_markers, vitamins, cardiac, thyroid, hormones, general.
+7. Assign clinical_group from: hematology, biochemistry, endocrine, lipids, metabolic, renal, hepatic, inflammation, iron, coagulation, urinalysis, immunology, tumor_markers, vitamins, cardiac, thyroid, hormones, cgm, general. Use "cgm" for all CGM/glucose sensor metrics (eHbA1c, MBG, TIR, LBGI, HBGI, AGP, Χρόνος κάλυψης CGM).
 8. If you detect the exam date, lab name, or ordering doctor, include them in the metadata.
 9. For multi-section documents (e.g., CBC + Hormones + Biochemistry in one report), extract ALL sections.
 10. Handle Greek, English, or any language. Preserve original test names.
@@ -476,8 +476,15 @@ def post_validate_results(raw_results: list) -> Tuple[List[ParsedResult], Dict]:
         if flag_warnings:
             summary["flag_corrections"] += 1
 
-        # Clinical group
+        # Clinical group — override to 'cgm' for known CGM metric names
         clinical_group = r.get("clinical_group", "general")
+        _cgm_metric_keys = {
+            "ehba1c", "ehba", "mbg", "tir", "cgm", "lbgi", "hbgi", "agp",
+            "χρόνος κάλυψης", "χρονος καλυψης", "μέση γλυκόζη", "μεση γλυκοζη",
+            "time in range", "αισθητήρας γλυκόζης",
+        }
+        if any(k in display_name.lower() for k in _cgm_metric_keys):
+            clinical_group = "cgm"
 
         # Trendable
         trendable = _is_trendable(display_name)

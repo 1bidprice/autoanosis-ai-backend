@@ -397,10 +397,10 @@ def get_patient_reports(patient_id):
                 "lab_panel": "Αιματολογικές Εξετάσεις",
                 "urine": "Ανάλυση Ούρων",
                 "imaging": "Απεικονιστική Εξέταση",
+                "cgm_report": "Αναφορά Αισθητήρα Γλυκόζης",
                 "unknown": "Ιατρική Αναφορά",
             }
             display_name = r.display_name or _DISPLAY_MAP.get(r.exam_type, r.exam_type)
-
             out.append({
                 "id": r.id,
                 "patient_id": r.patient_id,
@@ -561,6 +561,7 @@ def get_patient_exam_snapshot(patient_id):
             "lab_panel": "Αιματολογικές Εξετάσεις",
             "urine": "Ανάλυση Ούρων",
             "imaging": "Απεικονιστική Εξέταση",
+            "cgm_report": "Αναφορά Αισθητήρα Γλυκόζης",
             "unknown": "Ιατρική Αναφορά",
         }
 
