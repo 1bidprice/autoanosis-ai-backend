@@ -96,6 +96,12 @@ class ExamResult(Base):
     clinical_group = Column(String(64))
     measurement_at = Column(DateTime)
     parser_confidence = Column(Numeric(5,4))
+    # Semantic interpretation fields (v3.1)
+    metric_kind = Column(String(64), default='numeric_lab')
+    semantic_direction = Column(String(64), default='bidirectional')
+    evaluation_status = Column(String(32), default='unknown')
+    review_reason = Column(Text, default='')
+    disclaimer = Column(Text, default='')
     report = relationship("ExamReport", back_populates="results")
 
 class ExamImpression(Base):

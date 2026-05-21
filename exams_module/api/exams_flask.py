@@ -438,6 +438,12 @@ def get_patient_reports(patient_id):
                         "abnormal_flag": x.abnormal_flag,
                         "trendable": x.trendable,
                         "clinical_group": x.clinical_group,
+                        # Semantic interpretation fields (v3.1)
+                        "metric_kind": getattr(x, 'metric_kind', 'numeric_lab') or 'numeric_lab',
+                        "semantic_direction": getattr(x, 'semantic_direction', 'bidirectional') or 'bidirectional',
+                        "evaluation_status": getattr(x, 'evaluation_status', 'unknown') or 'unknown',
+                        "review_reason": getattr(x, 'review_reason', '') or '',
+                        "disclaimer": getattr(x, 'disclaimer', '') or '',
                     }
                     for x in r.results
                 ],

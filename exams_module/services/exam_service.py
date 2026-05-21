@@ -397,6 +397,12 @@ def process_document(db: Session, doc):
             trendable=r.trendable,
             clinical_group=r.clinical_group,
             parser_confidence=_safe_decimal(r.parser_confidence),
+            # Semantic interpretation fields (v3.1)
+            metric_kind=getattr(r, 'metric_kind', 'numeric_lab'),
+            semantic_direction=getattr(r, 'semantic_direction', 'bidirectional'),
+            evaluation_status=getattr(r, 'evaluation_status', 'unknown'),
+            review_reason=getattr(r, 'review_reason', '') or '',
+            disclaimer=getattr(r, 'disclaimer', '') or '',
         ))
 
     # Step 5: Store impressions

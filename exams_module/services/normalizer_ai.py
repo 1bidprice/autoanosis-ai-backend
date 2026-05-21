@@ -49,6 +49,12 @@ class ParsedResult:
     parser_confidence: float = 0.90
     ocr_snippet: str | None = None          # traceability: raw text fragment
     validation_warnings: list = field(default_factory=list)
+    # Semantic interpretation fields (v3.1)
+    metric_kind: str = "numeric_lab"        # numeric_lab | qualitative | percentage_distribution | count | narrative
+    semantic_direction: str = "bidirectional"  # higher_is_worse | lower_is_worse | bidirectional | qualitative_map | narrative_only
+    evaluation_status: str = "unknown"      # normal | warning | abnormal | unknown | needs_review
+    review_reason: str = ""                 # human-readable reason if not normal
+    disclaimer: str = ""                    # clinical disclaimer if applicable
 
 
 @dataclass
@@ -184,15 +190,15 @@ def classify_document(text: str) -> Tuple[str, float]:
 # GPT Structured Extraction
 # ---------------------------------------------------------------------------
 
-EXTRACTION_SYSTEM_PROMPT = """You are a medical laboratory report parser. You receive raw OCR text from medical exam documents and extract ALL test results into structured JSON.
+EXTRACTION_SYSTEM_PROMPT = """You are a medical document parser. You receive raw OCR text from ANY medical document (lab report, CGM/glucose sensor report, urinalysis, imaging report, prescription, etc.) and extract ALL findings into structured JSON.
 
 CRITICAL RULES:
 1. Extract EVERY SINGLE test/measurement found in the text. Do not skip any.
-2. For each test, extract: name, numeric value, text value (if non-numeric), unit, reference range (low and high as separate numbers), reference text (raw string), and clinical group.
+2. For each test, extract: name, numeric value, text value (if non-numeric), unit, reference range (low and high as separate numbers), reference text (raw string), clinical group, metric_kind, and semantic_direction.
 3. If a test has a numeric value, always put it in value_numeric. If the result is text-only (e.g., "Negative", "Αρνητικό"), put it in value_text.
 4. Preserve the EXACT unit as written in the document (e.g., "x10³/μL", "g/dL", "nmol/L").
 5. Parse reference ranges into separate low and high numbers. If only one bound exists, set the other to null. Keep the raw reference string in reference_text.
-6. Determine abnormal_flag: "high" if value > reference_high, "low" if value < reference_low, "normal" if within range, "unknown" if no reference range available.
+6. For abnormal_flag: set to "unknown" for CGM metrics, urinalysis qualitative values, and any metric without a numeric reference range. For standard lab values with numeric ranges: "high" if value > reference_high, "low" if value < reference_low, "normal" if within range.
 7. Assign clinical_group from: hematology, biochemistry, endocrine, lipids, metabolic, renal, hepatic, inflammation, iron, coagulation, urinalysis, immunology, tumor_markers, vitamins, cardiac, thyroid, hormones, cgm, general. Use "cgm" for all CGM/glucose sensor metrics (eHbA1c, MBG, TIR, LBGI, HBGI, AGP, Χρόνος κάλυψης CGM).
 8. If you detect the exam date, lab name, or ordering doctor, include them in the metadata.
 9. For multi-section documents (e.g., CBC + Hormones + Biochemistry in one report), extract ALL sections.
@@ -202,7 +208,7 @@ CRITICAL RULES:
 13. exam_date must always be returned as ISO date: YYYY-MM-DD. Never return DD/MM/YYYY, MM/DD/YYYY, DD-MM-YYYY, or localized date strings. If the date is ambiguous or cannot be confidently normalized, return null.
 14. For age-stratified or time-stratified reference ranges (e.g., "3.5-5.0 (>60ετη: 3.4-4.8)", "Πρωί 7-10πμ: 133-537 / Απόγευμα 4-8μμ: 68-327", "8.8-46.3 Χειμερινή / 15.7-60.3 Καλοκαιρινή"), ALWAYS use the FIRST / most general range as reference_low and reference_high. Store the full raw string in reference_text. Never use an age-specific or time-specific sub-range as the primary range unless it is the only one given.
 15. For multi-page documents where the patient header (ΟΝΟΜΑΤΕΠΩΝΥΜΟ, ΗΜΕΡ.ΕΞΕΤΑΣΗΣ) repeats on each page, treat the entire document as ONE exam from the date on the first page. Do not create duplicate metadata entries.
-16. For CGM/glucose sensor reports (containing eHbA1c, MBG, TIR, LBGI, HBGI, LibreView, FreeStyle Libre, αισθητήρας γλυκόζης), set document_type to "cgm_report". These metrics do NOT have traditional reference ranges — set reference_low and reference_high to null and abnormal_flag to "unknown".
+16. For CGM/glucose sensor reports (containing eHbA1c, MBG, TIR, LBGI, HBGI, LibreView, FreeStyle Libre, αισθητήρας γλυκόζης), set document_type to "cgm_report". CGM PERCENTAGE METRICS (TIR Φυσιολογικό, TIR Χαμηλό, TIR Υψηλό, Χρόνος κάλυψης CGM) do NOT use glucose thresholds (70 mg/dL, 180 mg/dL) as reference_low/reference_high for the PERCENTAGE value. Set reference_low=null, reference_high=null, abnormal_flag="unknown" for ALL CGM metrics. The glucose category description (e.g. "70-180 mg/dL") belongs ONLY in reference_text as a label, never as a numeric percentage boundary.
 17. For CGM reports, use EXACTLY these standardized display_name values (do NOT translate or expand them):
     - "eHbA1c" (not "Εκτιμώμενη HbA1c" or any other variant)
     - "MBG" (not "Μέση Γλυκόζη" or "Mean Blood Glucose")
@@ -212,7 +218,19 @@ CRITICAL RULES:
     - "TIR Υψηλό" (not "Υψηλό" alone or "Time in Range Υψηλό")
     - "LBGI" (Δείκτης Χαμηλής ΓΑ)
     - "HBGI" (Δείκτης Υψηλής ΓΑ)
-    For TIR metrics: reference_text should be the range description (e.g. "70 - 180 mg/dL"), reference_low/high should reflect the glucose range boundaries, NOT the percentage boundaries.
+18. For metric_kind, use one of: numeric_lab | qualitative | percentage_distribution | count | narrative | medication_instruction | microbiology_result
+    - CGM TIR/coverage metrics → percentage_distribution
+    - CGM eHbA1c/MBG/LBGI/HBGI → numeric_lab
+    - Urinalysis qualitative (Αρνητικό, +, ++) → qualitative
+    - Imaging/pathology findings → narrative
+    - Standard lab values → numeric_lab
+19. For semantic_direction, use one of: higher_is_worse | lower_is_worse | bidirectional | qualitative_map | narrative_only
+    - TIR Φυσιολογικό, Χρόνος κάλυψης CGM → lower_is_worse (higher % is better)
+    - TIR Χαμηλό, TIR Υψηλό, LBGI, HBGI → higher_is_worse (lower % is better)
+    - MBG, eHbA1c → higher_is_worse
+    - Standard lab values with reference ranges → bidirectional
+    - Qualitative results → qualitative_map
+    - Narrative findings → narrative_only
 
 Respond with ONLY valid JSON matching this exact schema:
 {
@@ -234,6 +252,8 @@ Respond with ONLY valid JSON matching this exact schema:
       "reference_text": "3.0 - 6.0 mg/dL",
       "abnormal_flag": "normal",
       "clinical_group": "biochemistry",
+      "metric_kind": "numeric_lab",
+      "semantic_direction": "bidirectional",
       "ocr_snippet": "the raw text line where this was found",
       "parser_confidence": 0.95
     }
@@ -407,10 +427,14 @@ def _detect_impossible_value(name: str, value: float | None) -> bool:
     return False
 
 
-def post_validate_results(raw_results: list) -> Tuple[List[ParsedResult], Dict]:
+def post_validate_results(raw_results: list, report_type: str = "blood_lab_report") -> Tuple[List[ParsedResult], Dict]:
     """
-    Post-validate all AI-extracted results.
+    Post-validate all AI-extracted results using semantic evaluation.
     Returns validated ParsedResult list and a validation summary dict.
+    
+    Args:
+        raw_results: list of raw result dicts from GPT extraction
+        report_type: canonical report type from semantic_rules.resolve_report_type()
     """
     validated = []
     summary = {
@@ -573,6 +597,39 @@ def post_validate_results(raw_results: list) -> Tuple[List[ParsedResult], Dict]:
         # OCR snippet for traceability
         ocr_snippet = r.get("ocr_snippet", "")
 
+        # Semantic evaluation — use report-type-aware logic
+        try:
+            from exams_module.services.semantic_rules import evaluate_result as _sem_eval
+            sem = _sem_eval(
+                report_type=report_type,
+                display_name=display_name,
+                value_numeric=value_numeric,
+                value_text=value_text,
+                ref_low=ref_low,
+                ref_high=ref_high,
+                claimed_flag=validated_flag,
+            )
+            metric_kind = r.get("metric_kind") or sem.metric_kind
+            semantic_direction = r.get("semantic_direction") or sem.semantic_direction
+            evaluation_status = sem.evaluation_status
+            review_reason = sem.review_reason
+            disclaimer = sem.disclaimer
+            # Override abnormal_flag with semantic evaluation for CGM and qualitative
+            if report_type == "cgm_report" or metric_kind == "qualitative":
+                if evaluation_status == "abnormal":
+                    validated_flag = "H"  # use H as generic "out of target" for mobile display
+                elif evaluation_status == "warning":
+                    validated_flag = "H"  # show as warning in mobile
+                elif evaluation_status == "normal":
+                    validated_flag = "N"
+        except Exception as _sem_err:
+            logger.warning(f"[AI_NORMALIZER] Semantic evaluation failed for '{display_name}': {_sem_err}")
+            metric_kind = r.get("metric_kind") or "numeric_lab"
+            semantic_direction = r.get("semantic_direction") or "bidirectional"
+            evaluation_status = "unknown"
+            review_reason = ""
+            disclaimer = ""
+
         if warnings:
             summary["warnings"] += 1
         else:
@@ -592,6 +649,11 @@ def post_validate_results(raw_results: list) -> Tuple[List[ParsedResult], Dict]:
             parser_confidence=round(raw_confidence, 4),
             ocr_snippet=ocr_snippet,
             validation_warnings=warnings,
+            metric_kind=metric_kind,
+            semantic_direction=semantic_direction,
+            evaluation_status=evaluation_status,
+            review_reason=review_reason,
+            disclaimer=disclaimer,
         ))
 
     return validated, summary
@@ -623,42 +685,66 @@ def _is_cgm_text(text: str) -> bool:
     return sum(1 for k in cgm_signals if k in low) >= 2
 
 
-def _decide_normalization_status(results: List[ParsedResult], summary: Dict, is_cgm: bool = False) -> Tuple[str, float]:
+def _decide_normalization_status(results: List[ParsedResult], summary: Dict, is_cgm: bool = False, report_type: str = "blood_lab_report") -> Tuple[str, float]:
     """
-    Decide normalization_status and confidence_score based on validation results.
+    Decide normalization_status and confidence_score based on semantic evaluation results.
     Returns (status, confidence).
-    CGM reports get a relaxed scoring path because TIR%, eHbA1c%, MBG etc.
-    naturally lack traditional lab reference ranges and units.
+    
+    Uses semantic evaluation_status from each result rather than generic valid/warning counts.
+    CGM, imaging, and other non-lab report types get report-type-aware scoring.
     """
     total = summary.get("total_extracted", 0)
-    valid = summary.get("valid", 0)
-    warnings_count = summary.get("warnings", 0)
     rejected = summary.get("rejected", 0)
     missing_units = summary.get("missing_units", 0)
-    missing_refs = summary.get("missing_references", 0)
 
     if total == 0 or len(results) == 0:
         return "needs_review", 0.30
 
-    # Calculate quality ratio
-    quality_ratio = valid / max(len(results), 1)
+    # Count results by semantic evaluation_status
+    sem_normal = sum(1 for r in results if r.evaluation_status == "normal")
+    sem_warning = sum(1 for r in results if r.evaluation_status == "warning")
+    sem_abnormal = sum(1 for r in results if r.evaluation_status == "abnormal")
+    sem_unknown = sum(1 for r in results if r.evaluation_status in ("unknown", "needs_review"))
+    sem_evaluated = sem_normal + sem_warning + sem_abnormal  # results with definitive evaluation
 
-    # CGM reports: use relaxed scoring — missing units/refs are expected for TIR%, eHbA1c%, MBG
-    if is_cgm:
-        if quality_ratio >= 0.5:
-            return "auto_verified", round(0.80 + quality_ratio * 0.10, 4)
-        return "auto_verified", round(0.75, 4)
+    n_results = len(results)
 
-    # High quality: >80% valid, few missing units/refs
-    if quality_ratio >= 0.8 and missing_units <= 2 and missing_refs <= len(results) * 0.3:
-        return "auto_verified", round(0.85 + quality_ratio * 0.10, 4)
+    # --- Imaging / narrative reports: no numeric evaluation possible ---
+    if report_type in ("imaging_report", "pathology_report", "microbiology_report",
+                       "medication_plan", "generic_medical_document"):
+        # These always need human review regardless of extraction quality
+        return "needs_review", 0.50
 
-    # Medium quality: some issues but mostly extracted
-    if quality_ratio >= 0.5:
-        return "auto_verified", round(0.70 + quality_ratio * 0.10, 4)
+    # --- CGM reports: use semantic evaluation ratio ---
+    if is_cgm or report_type == "cgm_report":
+        # CGM metrics are well-defined; if we extracted them, we can evaluate them
+        if n_results >= 3:
+            # Good extraction: enough metrics to be representative
+            evaluation_ratio = sem_evaluated / n_results
+            if evaluation_ratio >= 0.6:
+                return "auto_verified", round(min(0.92, 0.80 + evaluation_ratio * 0.15), 4)
+            return "auto_verified", round(0.78, 4)
+        elif n_results >= 1:
+            return "auto_verified", round(0.75, 4)
+        return "needs_review", 0.30
 
-    # Low quality: too many issues
-    return "needs_review", round(0.40 + quality_ratio * 0.20, 4)
+    # --- Standard lab reports: semantic-aware scoring ---
+    # Base quality: ratio of results with definitive evaluation
+    evaluation_ratio = sem_evaluated / max(n_results, 1)
+    # Penalize for missing units (indicates poor OCR or extraction)
+    unit_penalty = min(0.15, missing_units * 0.03)
+    # Penalize for high unknown ratio
+    unknown_penalty = min(0.10, (sem_unknown / max(n_results, 1)) * 0.15)
+
+    base_score = evaluation_ratio - unit_penalty - unknown_penalty
+
+    if base_score >= 0.75:
+        return "auto_verified", round(min(0.95, 0.82 + base_score * 0.12), 4)
+    if base_score >= 0.45:
+        return "auto_verified", round(min(0.85, 0.68 + base_score * 0.15), 4)
+
+    # Low quality
+    return "needs_review", round(max(0.30, 0.40 + base_score * 0.20), 4)
 
 
 # ---------------------------------------------------------------------------
@@ -706,9 +792,16 @@ def ai_normalize_lab(text: str) -> Optional[ParsedReport]:
         logger.info("[AI_NORMALIZER] CGM text detected via heuristic — overriding doc_type to cgm_report")
         doc_type = "cgm_report"
 
-    # Step 3: Post-validate all results
+    # Step 2c: Resolve canonical report_type for semantic evaluation
+    try:
+        from exams_module.services.semantic_rules import resolve_report_type
+        report_type = resolve_report_type(doc_type)
+    except Exception:
+        report_type = "cgm_report" if is_cgm else "blood_lab_report"
+
+    # Step 3: Post-validate all results using semantic evaluation
     raw_results = ai_response.get("results", [])
-    validated_results, validation_summary = post_validate_results(raw_results)
+    validated_results, validation_summary = post_validate_results(raw_results, report_type=report_type)
 
     # Step 4: Process impressions
     impressions = []
@@ -720,8 +813,10 @@ def ai_normalize_lab(text: str) -> Optional[ParsedReport]:
             review_required=imp.get("severity_flag") in ("attention", "critical"),
         ))
 
-    # Step 5: Decide normalization status (pass is_cgm for relaxed scoring)
-    norm_status, confidence = _decide_normalization_status(validated_results, validation_summary, is_cgm=is_cgm)
+    # Step 5: Decide normalization status using semantic evaluation
+    normalization_status, confidence_score = _decide_normalization_status(
+        validated_results, validation_summary, is_cgm=is_cgm, report_type=report_type
+    )
 
     # Step 6: Build source lineage for full traceability
     source_lineage = {
