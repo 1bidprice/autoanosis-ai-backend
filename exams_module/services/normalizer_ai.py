@@ -172,10 +172,22 @@ def classify_document(text: str) -> Tuple[str, float]:
     # Additional heuristic: structured OCR output containing glucose chart
     # axis values (0, 90, 180, 270, 360 mg/dL) with date ranges
     import re as _re
-    _cgm_axis = _re.search(r'(?:0[,\s]+90[,\s]+180[,\s]+270[,\s]+360|\b180\b.*\b270\b.*\b360\b)', low)
-    _date_range = _re.search(r'\d{2}/\d{2}/\d{4}.*\u2014.*\d{2}/\d{2}/\d{4}', low)
+    _cgm_axis = _re.search(
+        r'(?:0[,\s]+90[,\s]+180|\b180\b.*\b270\b.*\b360\b|παράμετροι.*0.*90.*180|παραμετροι.*0.*90.*180)',
+        low
+    )
+    _date_range = _re.search(
+        r'\d{2}/\d{2}/\d{4}.*?[\u2014\u2013\-\u2015]{1,3}.*?\d{2}/\d{2}/\d{4}',
+        low
+    )
     if _cgm_axis and _date_range:
         return "cgm", 0.90
+
+    # Heuristic: structured OCR summary with ΒΗΜΑ format + screenshot of app
+    _vima_app = _re.search(r'βημα.*screenshot.*εφαρμογ|βημα.*γραφικ.*δεδομεν', low)
+    _glucose_context = _re.search(r'(?:ημερομηνι|ωρα|γραφικ).*(?:01|02|03|04|05|06|07|08|09|10|11|12)/\d{2}/\d{4}', low)
+    if _vima_app and _glucose_context:
+        return "cgm", 0.85
 
     if any(k in low for k in cgm_keywords):
         return "cgm", 0.95
