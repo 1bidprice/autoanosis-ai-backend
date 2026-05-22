@@ -425,6 +425,8 @@ def get_patient_reports(patient_id):
                 "edited_by": r.edited_by,
                 "edited_at": r.edited_at.isoformat() if r.edited_at else None,
                 "source_lineage": r.source_lineage or {},
+                # ── Report-level guidance message (e.g. AGP-only CGM) ──
+                "report_review_reason": getattr(r, 'report_review_reason', '') or '',
                 # ── Numeric results (lab/urine) ──
                 "results": [
                     {

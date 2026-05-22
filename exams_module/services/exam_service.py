@@ -371,6 +371,7 @@ def process_document(db: Session, doc):
         summary=summary,
         findings_json=findings_json,
         status="active",
+        report_review_reason=getattr(parsed, 'report_review_reason', '') or '',
     )
     db.add(report)
     db.flush()

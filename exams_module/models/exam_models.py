@@ -73,6 +73,8 @@ class ExamReport(Base):
     edited_at = Column(DateTime)
     created_at = Column(DateTime, server_default=func.now(), nullable=False)
     updated_at = Column(DateTime, server_default=func.now(), nullable=False)
+    # Report-level guidance message (e.g. AGP-only CGM, no extractable numeric values)
+    report_review_reason = Column(Text, default='')
     document = relationship("ExamDocument", back_populates="reports")
     results = relationship("ExamResult", back_populates="report", cascade="all, delete-orphan")
     impressions = relationship("ExamImpression", back_populates="report", cascade="all, delete-orphan")

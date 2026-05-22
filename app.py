@@ -128,6 +128,14 @@ def run_migrations():
             migrations.append(
                 f"ALTER TABLE {_tbl} ADD COLUMN IF NOT EXISTS {_col} {_coltype}"
             )
+    # v3 — report-level guidance message for AGP-only CGM reports
+    _report_tables = [t for t in ["aa_exam_reports", "exam_reports"] if t in _existing_tables]
+    if not _report_tables and not _is_sqlite:
+        _report_tables = ["aa_exam_reports"]
+    for _tbl in _report_tables:
+        migrations.append(
+            f"ALTER TABLE {_tbl} ADD COLUMN IF NOT EXISTS report_review_reason TEXT DEFAULT ''"
+        )
 
     with engine.connect() as _conn:
         for _sql in migrations:
