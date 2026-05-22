@@ -458,6 +458,81 @@ def post_validate_results(raw_results: list, report_type: str = "blood_lab_repor
             summary["rejected"] += 1
             continue
 
+        # ---------------------------------------------------------------------------
+        # CGM ARTIFACT FILTER — reject chart labels, AGP metadata, axis labels
+        # These are visual/graphical elements from the CGM PDF, not clinical metrics.
+        # ---------------------------------------------------------------------------
+        if report_type == "cgm_report":
+            _cgm_artifact_blacklist_exact = {
+                # AGP chart descriptors
+                "προφίλ διακύμανσης γλυκόζης (agp)",
+                "προφιλ διακυμανσης γλυκοζης (agp)",
+                "προφίλ διακύμανσης γλυκόζης",
+                "προφιλ διακυμανσης γλυκοζης",
+                "αρχεία διακύμανσης γλυκόζης (agp)",
+                "αρχεια διακυμανσης γλυκοζης (agp)",
+                "αρχεία διακύμανσης γλυκόζης",
+                "αρχεια διακυμανσης γλυκοζης",
+                # Percentile/band descriptors
+                "50% διάμεσος", "50% διαμεσος",
+                "διάστημα 25%-75%", "διαστημα 25%-75%",
+                "διάστημα 10%-90%", "διαστημα 10%-90%",
+                "25%-75% interquartile range",
+                "10%-90% interdecile range",
+                # Multi-day curve labels
+                "πολύημερες καμπύλες γλυκόζης αίματος",
+                "πολυημερες καμπυλες γλυκοζης αιματος",
+                "πολύημερες καμπύλες γλυκόζης",
+                "πολυημερες καμπυλες γλυκοζης",
+                # Trend/date range labels
+                "τάσεις", "τασεις",
+                # Axis time labels (exact)
+                "ώρες", "ωρες", "hours",
+            }
+            _cgm_artifact_blacklist_contains = [
+                # AGP/chart pattern fragments
+                "agp",
+                "διακύμανσης", "διακυμανσης",
+                "καμπύλες γλυκόζης", "καμπυλες γλυκοζης",
+                "διάμεσος", "διαμεσος",
+                "διάστημα", "διαστημα",
+                "interquartile", "interdecile",
+                # Time-axis label pattern: contains only times like "00:00, 04:00"
+            ]
+            _cgm_time_axis_pattern = __import__('re').compile(
+                r'^[\d:,\s]+$'  # only digits, colons, commas, spaces → axis label
+            )
+            dn_check = display_name.lower().strip()
+            # Exact blacklist match
+            if dn_check in _cgm_artifact_blacklist_exact:
+                summary["rejected"] += 1
+                logger.debug("[CGM_FILTER] Rejected artifact (exact): %s", display_name)
+                continue
+            # Contains-fragment blacklist
+            if any(frag in dn_check for frag in _cgm_artifact_blacklist_contains):
+                summary["rejected"] += 1
+                logger.debug("[CGM_FILTER] Rejected artifact (fragment): %s", display_name)
+                continue
+            # Time-axis label: value_text looks like "00:00, 04:00, 08:00..."
+            vt = str(r.get("value_text") or "")
+            if _cgm_time_axis_pattern.match(vt.replace(" ", "")):
+                summary["rejected"] += 1
+                logger.debug("[CGM_FILTER] Rejected time-axis artifact: %s = %s", display_name, vt)
+                continue
+            # Date-range value: value_text matches "DD/MM/YYYY – DD/MM/YYYY"
+            _date_range_pattern = __import__('re').compile(
+                r'^\d{2}/\d{2}/\d{4}\s*[–\-]\s*\d{2}/\d{2}/\d{4}$'
+            )
+            if _date_range_pattern.match(vt.strip()):
+                summary["rejected"] += 1
+                logger.debug("[CGM_FILTER] Rejected date-range artifact: %s = %s", display_name, vt)
+                continue
+            # Multi-value text artifact: value_text contains multiple comma-separated times
+            if vt.count(":") >= 3 and vt.count(",") >= 2:
+                summary["rejected"] += 1
+                logger.debug("[CGM_FILTER] Rejected multi-time artifact: %s = %s", display_name, vt)
+                continue
+
         # CGM display_name normalization — standardize names regardless of GPT output
         _cgm_name_map = {
             # eHbA1c variants

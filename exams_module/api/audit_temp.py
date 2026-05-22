@@ -379,3 +379,129 @@ def reprocess_failed():
         return jsonify({"error": str(e)}), 500
     finally:
         db.close()
+
+
+# ---------------------------------------------------------------------------
+# POST /exams/admin/reclean-cgm
+# For existing CGM reports that already have artifact rows (AGP labels, axis
+# labels, etc.), delete those dirty ExamResult rows and re-run normalization
+# so only clean clinical metrics remain.
+# Auth: X-Admin-Secret header.
+# ---------------------------------------------------------------------------
+@audit_bp.route("/reclean-cgm", methods=["POST"])
+def reclean_cgm():
+    """
+    Finds all CGM reports (exam_type='cgm_report') that have artifact result
+    rows, deletes ALL their ExamResult rows, then re-runs process_document()
+    to repopulate with clean results using the updated CGM artifact filter.
+    Optional body: { "patient_id": 123 }
+    """
+    if not _require_admin():
+        return jsonify({"error": "unauthorized"}), 401
+
+    body = request.get_json(silent=True) or {}
+    target_patient = body.get("patient_id")
+
+    gen = get_db()
+    db = next(gen)
+    try:
+        from exams_module.services.exam_service import process_document
+
+        # Artifact display_name fragments to detect dirty reports
+        _artifact_fragments = [
+            "agp", "\u03b4\u03b9\u03b1\u03ba\u03cd\u03bc\u03b1\u03bd\u03c3\u03b7\u03c2", "\u03b4\u03b9\u03b1\u03ba\u03c5\u03bc\u03b1\u03bd\u03c3\u03b7\u03c2",
+            "\u03ba\u03b1\u03bc\u03c0\u03cd\u03bb\u03b5\u03c2 \u03b3\u03bb\u03c5\u03ba\u03cc\u03b6\u03b7\u03c2", "\u03ba\u03b1\u03bc\u03c0\u03c5\u03bb\u03b5\u03c2 \u03b3\u03bb\u03c5\u03ba\u03bf\u03b6\u03b7\u03c2",
+            "\u03b4\u03b9\u03ac\u03bc\u03b5\u03c3\u03bf\u03c2", "\u03b4\u03b9\u03b1\u03bc\u03b5\u03c3\u03bf\u03c2",
+            "\u03b4\u03b9\u03ac\u03c3\u03c4\u03b7\u03bc\u03b1", "\u03b4\u03b9\u03b1\u03c3\u03c4\u03b7\u03bc\u03b1",
+            "\u03c0\u03bf\u03bb\u03cd\u03b7\u03bc\u03b5\u03c1\u03b5\u03c2", "\u03c0\u03bf\u03bb\u03c5\u03b7\u03bc\u03b5\u03c1\u03b5\u03c2",
+            "\u03c4\u03ac\u03c3\u03b5\u03b9\u03c2", "\u03c4\u03b1\u03c3\u03b5\u03b9\u03c2",
+            "interquartile", "interdecile",
+        ]
+
+        q = db.query(ExamReport).filter(ExamReport.exam_type == "cgm_report")
+        if target_patient:
+            q = q.filter(ExamReport.patient_id == int(target_patient))
+        cgm_reports = q.all()
+
+        cleaned = []
+        for report in cgm_reports:
+            # Check if this report has any artifact rows
+            existing_results = db.query(ExamResult).filter(
+                ExamResult.report_id == report.id
+            ).all()
+            has_artifacts = any(
+                any(frag in (r.display_name or "").lower() for frag in _artifact_fragments)
+                for r in existing_results
+            )
+            if not has_artifacts:
+                continue  # already clean
+
+            doc_id = report.document_id
+            patient_id = report.patient_id
+            report_id = report.id
+
+            # Delete all ExamResult rows for this report
+            deleted = db.query(ExamResult).filter(
+                ExamResult.report_id == report.id
+            ).delete(synchronize_session=False)
+
+            # Delete the old report so process_document creates a fresh one
+            db.delete(report)
+            db.flush()
+
+            # Get the parent document and re-run normalization
+            doc = db.query(ExamDocument).filter(
+                ExamDocument.id == doc_id
+            ).first()
+            if not doc:
+                db.commit()
+                cleaned.append({
+                    "report_id": report_id,
+                    "document_id": doc_id,
+                    "patient_id": patient_id,
+                    "success": False,
+                    "error": "document_not_found",
+                    "deleted_results": deleted,
+                })
+                continue
+
+            try:
+                result = process_document(db, doc)
+                db.commit()
+                cleaned.append({
+                    "report_id": report_id,
+                    "document_id": doc_id,
+                    "patient_id": patient_id,
+                    "deleted_results": deleted,
+                    "new_results_count": result.get("results_count", 0),
+                    "normalization_status": result.get("normalization_status"),
+                    "success": True,
+                })
+                logger.info(
+                    "[RECLEAN-CGM] report=%s doc=%s patient=%s \u2192 deleted %d artifacts, new=%d results",
+                    report_id, doc_id, patient_id, deleted, result.get("results_count", 0),
+                )
+            except Exception as proc_err:
+                db.rollback()
+                logger.error("[RECLEAN-CGM] doc=%s failed: %s", doc_id, proc_err)
+                cleaned.append({
+                    "report_id": report_id,
+                    "document_id": doc_id,
+                    "patient_id": patient_id,
+                    "success": False,
+                    "error": str(proc_err),
+                    "deleted_results": deleted,
+                })
+
+        return jsonify({
+            "cgm_reports_scanned": len(cgm_reports),
+            "reports_recleaned": len(cleaned),
+            "results": cleaned,
+        }), 200
+
+    except Exception as e:
+        db.rollback()
+        logger.error("[RECLEAN-CGM] Fatal: %s", e)
+        return jsonify({"error": str(e)}), 500
+    finally:
+        db.close()
