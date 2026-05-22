@@ -132,13 +132,34 @@ def detect_garbage_text(text: str) -> Tuple[bool, str]:
 def classify_document(text: str) -> Tuple[str, float]:
     low = text.lower()
 
-    lab_keywords = [
-        # CGM / Glucose sensor reports
+    # -----------------------------------------------------------------------
+    # CGM keywords — checked FIRST, before imaging, because CGM app
+    # screenshots often contain words like "ευρήματα" (findings) in their
+    # UI chrome which would otherwise trigger the imaging classifier.
+    # -----------------------------------------------------------------------
+    cgm_keywords = [
         "ehba1c", "ehba", "mbg", "tir", "cgm", "libreview", "freestyle libre",
+        "librelink", "libre link", "dexcom", "medtronic", "guardian",
         "time in range", "χρόνος κάλυψης", "χρονος καλυψης",
         "αισθητήρας γλυκόζης", "αισθητηρας γλυκοζης",
-        "lbgi", "hbgi", "agp", "μέση γλυκόζη", "μεση γλυκοζη",
-        "φυσιολογικό", "χαμηλό", "υψηλό",
+        "lbgi", "hbgi",
+        "μέση γλυκόζη", "μεση γλυκοζη",
+        # AGP chart indicators — present in CGM app screenshots
+        "agp", "διακύμανσης γλυκόζης", "διακυμανσης γλυκοζης",
+        "50% διάμεσος", "50% διαμεσος",
+        "διάστημα 25%-75%", "διαστημα 25%-75%",
+        "διάστημα 10%-90%", "διαστημα 10%-90%",
+        "πολύημερες καμπύλες", "πολυημερες καμπυλες",
+        "τάσεις γλυκόζης", "τασεις γλυκοζης",
+        "αρχεία διακύμανσης", "αρχεια διακυμανσης",
+        "προφίλ διακύμανσης", "προφιλ διακυμανσης",
+        "glucose variability", "ambulatory glucose",
+    ]
+
+    if any(k in low for k in cgm_keywords):
+        return "cgm", 0.95
+
+    lab_keywords = [
         # English
         "crp", "esr", "tsh", "vitamin d", "ferritin", "wbc", "rbc", "hgb",
         "plt", "hemoglobin", "hematocrit", "cholesterol", "triglycerides",
@@ -1085,7 +1106,7 @@ def normalize_document(text: str) -> Optional[ParsedReport]:
 
     label, class_confidence = classify_document(text)
 
-    if label == "lab":
+    if label in ("lab", "cgm"):
         # For large multi-section PDFs, split into chunks to avoid memory/timeout
         if len(text) > CHUNK_THRESHOLD:
             sections = _split_into_sections(text)
