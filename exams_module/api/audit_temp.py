@@ -652,3 +652,53 @@ def reprocess_unknown():
         return jsonify({"error": str(e)}), 500
     finally:
         db.close()
+
+
+@audit_bp.route("/delete-reports", methods=["POST"])
+def delete_reports():
+    """Delete specific reports (and optionally their documents) by ID list."""
+    if not _require_admin():
+        return jsonify({"error": "unauthorized"}), 401
+    data = request.get_json(force=True) or {}
+    report_ids = data.get("report_ids", [])
+    also_delete_docs = data.get("also_delete_documents", False)
+    if not report_ids:
+        return jsonify({"error": "report_ids required"}), 400
+
+    gen = get_db()
+    db = next(gen)
+    deleted_reports = []
+    deleted_docs = []
+    try:
+        for rid in report_ids:
+            report = db.query(ExamReport).filter(ExamReport.id == rid).first()
+            if not report:
+                deleted_reports.append({"id": rid, "status": "not_found"})
+                continue
+            doc_id = report.document_id
+            # Delete results first
+            db.query(ExamResult).filter(ExamResult.report_id == rid).delete()
+            db.delete(report)
+            db.flush()
+            deleted_reports.append({"id": rid, "status": "deleted", "document_id": str(doc_id)})
+            # Optionally delete the orphan document too
+            if also_delete_docs and doc_id:
+                doc = db.query(ExamDocument).filter(ExamDocument.id == doc_id).first()
+                if doc:
+                    remaining = db.query(ExamReport).filter(ExamReport.document_id == doc_id).count()
+                    if remaining == 0:
+                        db.delete(doc)
+                        db.flush()
+                        deleted_docs.append(str(doc_id))
+        db.commit()
+        logger.info("[DELETE-REPORTS] deleted=%d docs=%d", len(deleted_reports), len(deleted_docs))
+        return jsonify({
+            "deleted_reports": deleted_reports,
+            "deleted_documents": deleted_docs,
+        }), 200
+    except Exception as e:
+        db.rollback()
+        logger.error("[DELETE-REPORTS] Fatal: %s", e, exc_info=True)
+        return jsonify({"error": str(e)}), 500
+    finally:
+        db.close()
