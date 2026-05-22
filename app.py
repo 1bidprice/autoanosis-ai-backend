@@ -82,36 +82,77 @@ except Exception as _exams_init_err:
 def run_migrations():
     """Idempotent ALTER TABLE migrations — safe to run on every startup.
     Uses IF NOT EXISTS so re-running is a no-op on PostgreSQL.
-    SQLite does not support IF NOT EXISTS on ALTER TABLE — silently skipped.
+    SQLite does not support IF NOT EXISTS on ALTER TABLE — each statement
+    is wrapped individually so failures are non-fatal.
+
+    IMPORTANT: The production table is aa_exam_results (not exam_results).
+    All ORM models use the aa_ prefix — see exam_models.py __tablename__.
     """
+    import traceback as _tb
     from exams_module.db.database import engine, DATABASE_URL
-    from sqlalchemy import text as _text
-    _is_pg = not DATABASE_URL.startswith("sqlite")
-    migrations = [
-        # v1 — aa_medical_documents.extracted_text
-        "ALTER TABLE aa_medical_documents ADD COLUMN IF NOT EXISTS extracted_text TEXT",
-        # v2 — exam_results semantic evaluation fields (c50e888)
-        "ALTER TABLE exam_results ADD COLUMN IF NOT EXISTS metric_kind VARCHAR(50)",
-        "ALTER TABLE exam_results ADD COLUMN IF NOT EXISTS semantic_direction VARCHAR(50)",
-        "ALTER TABLE exam_results ADD COLUMN IF NOT EXISTS evaluation_status VARCHAR(30)",
-        "ALTER TABLE exam_results ADD COLUMN IF NOT EXISTS review_reason TEXT",
-        "ALTER TABLE exam_results ADD COLUMN IF NOT EXISTS disclaimer TEXT",
+    from sqlalchemy import text as _text, inspect as _inspect
+    _is_sqlite = DATABASE_URL.startswith("sqlite")
+
+    # Detect which tables actually exist in the DB before migrating
+    try:
+        _inspector = _inspect(engine)
+        _existing_tables = set(_inspector.get_table_names())
+        logger.info(f"[MIGRATIONS] Existing tables: {sorted(_existing_tables)}")
+    except Exception as _insp_err:
+        logger.warning(f"[MIGRATIONS] Could not inspect tables: {_insp_err}")
+        _existing_tables = set()
+
+    # Build migration list — only include tables that exist in the DB
+    # Each entry: (table_name, column_def)
+    _semantic_cols = [
+        ("metric_kind",        "VARCHAR(50)"),
+        ("semantic_direction", "VARCHAR(50)"),
+        ("evaluation_status", "VARCHAR(30)"),
+        ("review_reason",     "TEXT"),
+        ("disclaimer",        "TEXT"),
     ]
+
+    # Target both possible table names — migrate whichever exists
+    _result_tables = [t for t in ["aa_exam_results", "exam_results"] if t in _existing_tables]
+    if not _result_tables and not _is_sqlite:
+        # Fallback: try both anyway (inspector may have failed)
+        _result_tables = ["aa_exam_results", "exam_results"]
+        logger.warning("[MIGRATIONS] Inspector returned no tables — will attempt both table names")
+
+    migrations = []
+    # v1 — aa_medical_documents.extracted_text
+    migrations.append("ALTER TABLE aa_medical_documents ADD COLUMN IF NOT EXISTS extracted_text TEXT")
+    # v2 — semantic evaluation fields on all result tables found
+    for _tbl in _result_tables:
+        for _col, _coltype in _semantic_cols:
+            migrations.append(
+                f"ALTER TABLE {_tbl} ADD COLUMN IF NOT EXISTS {_col} {_coltype}"
+            )
+
     with engine.connect() as _conn:
         for _sql in migrations:
             try:
                 _conn.execute(_text(_sql))
-                logger.info(f"[MIGRATIONS] OK: {_sql[:80]}")
+                logger.info(f"[MIGRATIONS] OK: {_sql}")
             except Exception as _col_err:
-                # Column already exists or SQLite — log and continue
-                logger.warning(f"[MIGRATIONS] Skipped (non-fatal): {_col_err}")
+                # Log full traceback so we can diagnose in Render logs
+                logger.warning(
+                    f"[MIGRATIONS] Skipped (non-fatal): {_sql}\n"
+                    f"  Reason: {_col_err}\n"
+                    f"  Traceback: {_tb.format_exc()}"
+                )
         _conn.commit()
     logger.info("[MIGRATIONS] All migrations complete")
 
 try:
     run_migrations()
 except Exception as _mig_err:
-    logger.warning(f"[MIGRATIONS] run_migrations() warning (non-fatal): {_mig_err}")
+    import traceback as _tb2
+    logger.error(
+        f"[MIGRATIONS] run_migrations() FAILED — server will continue but semantic fields may be missing.\n"
+        f"  Error: {_mig_err}\n"
+        f"  Traceback: {_tb2.format_exc()}"
+    )
 
 CORS(app, resources={
     r"/*": {
