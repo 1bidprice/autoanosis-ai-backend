@@ -79,16 +79,39 @@ except Exception as _exams_init_err:
     logger.warning(f"[EXAMS] init_db warning (non-fatal): {_exams_init_err}")
 
 # Run incremental migrations (idempotent ALTER TABLE statements)
-try:
-    from exams_module.db.database import engine
+def run_migrations():
+    """Idempotent ALTER TABLE migrations — safe to run on every startup.
+    Uses IF NOT EXISTS so re-running is a no-op on PostgreSQL.
+    SQLite does not support IF NOT EXISTS on ALTER TABLE — silently skipped.
+    """
+    from exams_module.db.database import engine, DATABASE_URL
+    from sqlalchemy import text as _text
+    _is_pg = not DATABASE_URL.startswith("sqlite")
+    migrations = [
+        # v1 — aa_medical_documents.extracted_text
+        "ALTER TABLE aa_medical_documents ADD COLUMN IF NOT EXISTS extracted_text TEXT",
+        # v2 — exam_results semantic evaluation fields (c50e888)
+        "ALTER TABLE exam_results ADD COLUMN IF NOT EXISTS metric_kind VARCHAR(50)",
+        "ALTER TABLE exam_results ADD COLUMN IF NOT EXISTS semantic_direction VARCHAR(50)",
+        "ALTER TABLE exam_results ADD COLUMN IF NOT EXISTS evaluation_status VARCHAR(30)",
+        "ALTER TABLE exam_results ADD COLUMN IF NOT EXISTS review_reason TEXT",
+        "ALTER TABLE exam_results ADD COLUMN IF NOT EXISTS disclaimer TEXT",
+    ]
     with engine.connect() as _conn:
-        _conn.execute(__import__("sqlalchemy").text(
-            "ALTER TABLE aa_medical_documents ADD COLUMN IF NOT EXISTS extracted_text TEXT"
-        ))
+        for _sql in migrations:
+            try:
+                _conn.execute(_text(_sql))
+                logger.info(f"[MIGRATIONS] OK: {_sql[:80]}")
+            except Exception as _col_err:
+                # Column already exists or SQLite — log and continue
+                logger.warning(f"[MIGRATIONS] Skipped (non-fatal): {_col_err}")
         _conn.commit()
-    logger.info("[MIGRATIONS] aa_medical_documents.extracted_text column ensured")
+    logger.info("[MIGRATIONS] All migrations complete")
+
+try:
+    run_migrations()
 except Exception as _mig_err:
-    logger.warning(f"[MIGRATIONS] ALTER TABLE warning (non-fatal): {_mig_err}")
+    logger.warning(f"[MIGRATIONS] run_migrations() warning (non-fatal): {_mig_err}")
 
 CORS(app, resources={
     r"/*": {
