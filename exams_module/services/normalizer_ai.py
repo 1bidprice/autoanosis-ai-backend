@@ -154,7 +154,28 @@ def classify_document(text: str) -> Tuple[str, float]:
         "αρχεία διακύμανσης", "αρχεια διακυμανσης",
         "προφίλ διακύμανσης", "προφιλ διακυμανσης",
         "glucose variability", "ambulatory glucose",
+        # Structured OCR summary patterns (AI-generated OCR output format)
+        # These appear when the OCR pipeline produces a step-by-step summary
+        # of CGM app screenshots instead of raw text.
+        "50% διάμεσος", "50% διαμεσος",
+        "διάστημα 25%", "διαστημα 25%",
+        "διάστημα 10%", "διαστημα 10%",
+        "λεζάντες", "λεζαντες",
+        "πολυήμερες καμπύλες", "πολυημερες καμπυλες",
+        "καμπύλες γλυκόζης", "καμπυλες γλυκοζης",
+        "γλυκόζης αίματος", "γλυκοζης αιματος",
+        "επιλέξτε ημερομηνία", "επιλεξτε ημερομηνια",
+        "επιλογή όλων", "επιλογη ολων",
+        "ιστορικό", "ιστορικο",  # CGM app navigation tab
     ]
+
+    # Additional heuristic: structured OCR output containing glucose chart
+    # axis values (0, 90, 180, 270, 360 mg/dL) with date ranges
+    import re as _re
+    _cgm_axis = _re.search(r'(?:0[,\s]+90[,\s]+180[,\s]+270[,\s]+360|\b180\b.*\b270\b.*\b360\b)', low)
+    _date_range = _re.search(r'\d{2}/\d{2}/\d{4}.*\u2014.*\d{2}/\d{2}/\d{4}', low)
+    if _cgm_axis and _date_range:
+        return "cgm", 0.90
 
     if any(k in low for k in cgm_keywords):
         return "cgm", 0.95
