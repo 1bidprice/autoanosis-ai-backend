@@ -833,8 +833,8 @@ def ai_normalize_lab(text: str) -> Optional[ParsedReport]:
     return ParsedReport(
         exam_type=doc_type if doc_type not in ("mixed_panel",) else "lab_panel",
         exam_category="lab",
-        confidence_score=confidence,
-        normalization_status=norm_status,
+        confidence_score=confidence_score,
+        normalization_status=normalization_status,
         source_lineage=source_lineage,
         results=validated_results,
         impressions=impressions,
