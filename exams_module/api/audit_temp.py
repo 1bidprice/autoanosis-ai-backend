@@ -581,3 +581,74 @@ def patch_agp_reports():
         return jsonify({"error": str(e)}), 500
     finally:
         db.close()
+
+
+# ---------------------------------------------------------------------------
+# POST /exams/admin/reprocess-unknown
+# Re-runs normalization for all reports with type=unknown or exam_type=unknown
+# where the parent document's OCR text is now classifiable as CGM.
+# Deletes the old unknown report and creates a fresh one.
+# Optional body: { "patient_id": 123 }
+# ---------------------------------------------------------------------------
+
+@audit_bp.route("/reprocess-unknown", methods=["POST"])
+def reprocess_unknown():
+    """
+    Finds reports with exam_type='unknown' and re-runs normalization on the
+    parent document's OCR text. Useful after classifier improvements.
+    """
+    if not _require_admin():
+        return jsonify({"error": "unauthorized"}), 401
+
+    body = request.get_json(silent=True) or {}
+    target_patient = body.get("patient_id")
+
+    gen = get_db()
+    db = next(gen)
+    try:
+        from exams_module.services.exam_service import process_document
+
+        q = db.query(ExamReport).filter(ExamReport.exam_type == "unknown")
+        if target_patient:
+            q = q.filter(ExamReport.patient_id == int(target_patient))
+        unknown_reports = q.all()
+
+        reprocessed = []
+        for report in unknown_reports:
+            doc = db.query(ExamDocument).filter(ExamDocument.id == report.document_id).first()
+            if not doc or not doc.ocr_text:
+                continue
+            try:
+                # Delete old report results and report
+                db.query(ExamResult).filter(ExamResult.report_id == report.id).delete(synchronize_session=False)
+                db.delete(report)
+                db.flush()
+                db.commit()
+
+                # Re-run full normalization pipeline
+                result = process_document(db, doc)
+                new_report_ids = result.get("report_ids", [])
+                reprocessed.append({
+                    "document_id": doc.id,
+                    "patient_id": doc.patient_id,
+                    "new_report_ids": new_report_ids,
+                    "normalization_status": result.get("normalization_status"),
+                    "success": True,
+                })
+                logger.info("[REPROCESS-UNKNOWN] doc=%s -> reports=%s", doc.id, new_report_ids)
+            except Exception as proc_err:
+                db.rollback()
+                logger.error("[REPROCESS-UNKNOWN] doc=%s failed: %s", doc.id, proc_err, exc_info=True)
+                reprocessed.append({"document_id": doc.id, "success": False, "error": str(proc_err)})
+
+        return jsonify({
+            "unknown_reports_scanned": len(unknown_reports),
+            "reprocessed": len(reprocessed),
+            "results": reprocessed,
+        }), 200
+    except Exception as e:
+        db.rollback()
+        logger.error("[REPROCESS-UNKNOWN] Fatal: %s", e)
+        return jsonify({"error": str(e)}), 500
+    finally:
+        db.close()
