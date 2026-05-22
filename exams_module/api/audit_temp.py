@@ -505,3 +505,79 @@ def reclean_cgm():
         return jsonify({"error": str(e)}), 500
     finally:
         db.close()
+
+
+# ---------------------------------------------------------------------------
+# POST /exams/admin/patch-agp-reports
+# One-time backfill: set report_review_reason on existing CGM reports that
+# have 0 results (AGP-only) but the column was added after they were created.
+# ---------------------------------------------------------------------------
+
+@audit_bp.route("/patch-agp-reports", methods=["POST"])
+def patch_agp_reports():
+    """
+    Finds all CGM reports with 0 results and sets report_review_reason to the
+    AGP-only guidance message if the parent document's OCR text contains AGP
+    chart indicators. Safe to run multiple times (idempotent).
+    Optional body: { "patient_id": 123 }
+    """
+    if not _require_admin():
+        return jsonify({"error": "unauthorized"}), 401
+
+    _AGP_MESSAGE = (
+        "Η εικόνα φαίνεται να περιέχει κυρίως γράφημα AGP/τάσεων και όχι αριθμητικές μετρήσεις. "
+        "Για πλήρη ανάλυση, ανέβασε την οθόνη ή το PDF που περιέχει Χρόνο κάλυψης CGM, eHbA1c, MBG και Time in Range."
+    )
+    _AGP_INDICATORS = [
+        "agp", "διακύμανσης", "διακυμανσης",
+        "διάμεσος", "διαμεσος", "διάστημα", "διαστημα",
+        "πολύημερες", "πολυημερες", "τάσεις", "τασεις",
+        "interquartile", "interdecile",
+    ]
+
+    body = request.get_json(silent=True) or {}
+    target_patient = body.get("patient_id")
+
+    gen = get_db()
+    db = next(gen)
+    try:
+        from sqlalchemy import text as _text
+        q = db.query(ExamReport).filter(ExamReport.exam_type == "cgm_report")
+        if target_patient:
+            q = q.filter(ExamReport.patient_id == int(target_patient))
+        cgm_reports = q.all()
+
+        patched = []
+        for report in cgm_reports:
+            result_count = db.query(ExamResult).filter(ExamResult.report_id == report.id).count()
+            if result_count > 0:
+                continue  # has results — not AGP-only
+            doc = db.query(ExamDocument).filter(ExamDocument.id == report.document_id).first()
+            ocr_lower = (doc.ocr_text or "").lower() if doc else ""
+            is_agp = any(ind in ocr_lower for ind in _AGP_INDICATORS)
+            if not is_agp:
+                continue
+            try:
+                db.execute(
+                    _text("UPDATE aa_exam_reports SET report_review_reason = :msg WHERE id = :rid"),
+                    {"msg": _AGP_MESSAGE, "rid": report.id}
+                )
+                db.commit()
+                patched.append({"report_id": report.id, "patient_id": report.patient_id, "success": True})
+                logger.info("[PATCH-AGP] report=%s patient=%s — set report_review_reason", report.id, report.patient_id)
+            except Exception as upd_err:
+                db.rollback()
+                logger.error("[PATCH-AGP] report=%s failed: %s", report.id, upd_err)
+                patched.append({"report_id": report.id, "patient_id": report.patient_id, "success": False, "error": str(upd_err)})
+
+        return jsonify({
+            "cgm_reports_scanned": len(cgm_reports),
+            "reports_patched": len(patched),
+            "results": patched,
+        }), 200
+    except Exception as e:
+        db.rollback()
+        logger.error("[PATCH-AGP] Fatal: %s", e)
+        return jsonify({"error": str(e)}), 500
+    finally:
+        db.close()
