@@ -288,6 +288,18 @@ def process_document(db: Session, doc):
             "report_ids": [],
         }
 
+    # Persist semantic document metadata independently of ExamResult rows.
+    # Narrative documents deliberately retain an empty results collection.
+    document_type = getattr(parsed, "document_type", None) or parsed.exam_type
+    doc.document_type = document_type
+    doc.document_subtype = getattr(parsed, "document_subtype", None)
+    doc.display_title = getattr(parsed, "display_title", None)
+    doc.semantic_status = parsed.normalization_status
+    doc.structured_payload = getattr(parsed, "structured_payload", None) or {}
+    doc.assistant_summary = getattr(parsed, "assistant_summary", "") or ""
+    doc.classifier_label = document_type
+    doc.review_reason = getattr(parsed, "review_reason", "") or getattr(parsed, "report_review_reason", "") or None
+
     # Step 3: Build narrative_text and findings_json from impressions
     # For imaging/narrative reports, consolidate all impression text into narrative_text
     # and build a structured findings_json list.
@@ -338,7 +350,7 @@ def process_document(db: Session, doc):
             summary = narrative_text[:300]
 
     # Build display_name from parsed metadata or exam_type
-    display_name = getattr(parsed, "display_name", None)
+    display_name = getattr(parsed, "display_title", None) or getattr(parsed, "display_name", None)
     if not display_name:
         _DISPLAY_MAP = {
             "imaging_report": "Απεικονιστική Εξέταση",
@@ -350,6 +362,13 @@ def process_document(db: Session, doc):
             "urine": "Ανάλυση Ούρων",
             "imaging": "Απεικονιστική Εξέταση",
             "cgm_report": "Αναφορά Αισθητήρα Γλυκόζης",
+            "medical_certificate": "Ιατρική Βεβαίωση / Γνωμάτευση",
+            "medical_opinion": "Ιατρική Γνωμάτευση",
+            "prescription_or_treatment_plan": "Θεραπευτικό Πλάνο / Αγωγή",
+            "hospital_discharge": "Εξιτήριο Νοσηλείας",
+            "graph_or_chart_only": "Ιατρικό Γράφημα / Διάγραμμα",
+            "generic_medical_document": "Ιατρικό Έγγραφο",
+            "unknown_needs_review": "Ιατρικό Έγγραφο προς Έλεγχο",
         }
         display_name = _DISPLAY_MAP.get(parsed.exam_type, None)
 
@@ -372,6 +391,8 @@ def process_document(db: Session, doc):
         findings_json=findings_json,
         status="active",
         report_review_reason=getattr(parsed, 'report_review_reason', '') or '',
+        structured_payload=getattr(parsed, "structured_payload", None) or {},
+        terminology_mappings=getattr(parsed, "terminology_mappings", None) or [],
     )
     db.add(report)
     db.flush()
@@ -425,6 +446,8 @@ def process_document(db: Session, doc):
         "normalization_status": parsed.normalization_status,
         "confidence_score": float(parsed.confidence_score),
         "results_count": len(parsed.results),
+        "document_type": document_type,
+        "document_subtype": doc.document_subtype,
     }
     if hasattr(parsed, "validation_summary") and parsed.validation_summary:
         event_payload["validation_summary"] = parsed.validation_summary
@@ -444,8 +467,10 @@ def process_document(db: Session, doc):
         if vs.get("flag_corrections", 0) > 0:
             review_reason_parts.append(f"{vs['flag_corrections']} abnormal flags corrected")
 
-        reason_text = "; ".join(review_reason_parts) if review_reason_parts else "Report requires human review"
-        _review(db, doc, "low_confidence_or_validation_issues", reason_text)
+        parsed_reason = getattr(parsed, "review_reason", "") or getattr(parsed, "report_review_reason", "")
+        reason_text = "; ".join(review_reason_parts) if review_reason_parts else (parsed_reason or "Report requires human review")
+        reason_code = "document_semantic_review" if document_type not in ("lab_results", "lab_panel", "cgm_report", "imaging_report") else "low_confidence_or_validation_issues"
+        _review(db, doc, reason_code, reason_text)
 
     return {
         "document_id": doc.id,
@@ -456,4 +481,8 @@ def process_document(db: Session, doc):
         "report_ids": [report.id],
         "results_count": len(parsed.results),
         "validation_summary": getattr(parsed, "validation_summary", {}),
+        "document_type": document_type,
+        "document_subtype": doc.document_subtype,
+        "display_title": display_name,
+        "assistant_summary": doc.assistant_summary,
     }

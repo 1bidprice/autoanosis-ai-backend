@@ -79,6 +79,16 @@ class ParsedReport:
     ordering_doctor: str | None = None
     validation_summary: Dict = field(default_factory=dict)
     report_review_reason: str = ""          # report-level guidance message (e.g. AGP-only)
+    # Universal narrative document contract. These remain optional so the
+    # established lab/CGM/imaging interface stays backward-compatible.
+    document_type: str | None = None
+    document_subtype: str | None = None
+    display_title: str | None = None
+    structured_payload: Dict = field(default_factory=dict)
+    terminology_mappings: List[Dict] = field(default_factory=list)
+    assistant_summary: str = ""
+    needs_review: bool = False
+    review_reason: str = ""
 
 
 # ---------------------------------------------------------------------------
@@ -192,6 +202,24 @@ def classify_document(text: str) -> Tuple[str, float]:
     if any(k in low for k in cgm_keywords):
         return "cgm", 0.95
 
+    # Narrative documents are classified before lab/imaging terms. A
+    # certificate may mention a diagnosis or medicine, but it must not become
+    # a numeric exam merely because it contains clinical terminology.
+    narrative_patterns = [
+        ("medical_certificate", ["ιατρική βεβαίω", "ιατρικη βεβαιω", "βεβαίωση ιατρο", "βεβαιωση ιατρο", "το παρόν χορηγείται", "το παρον χορηγειται"]),
+        ("medical_opinion", ["ιατρική γνωμάτευ", "ιατρικη γνωματευ", "κλινική γνωμάτευ", "κλινικη γνωματευ"]),
+        ("hospital_discharge", ["εξιτήριο", "εξιτηριο", "ημερομηνία εισαγωγής", "ημερομηνια εισαγωγης"]),
+        ("prescription_or_treatment_plan", ["θεραπευτική αγωγ", "θεραπευτικη αγωγ", "συνταγογράφ", "συνταγογραφ", "δοσολογία", "δοσολογια"]),
+        ("pathology_report", ["παθολογοανατομ", "ιστολογική εξέτασ", "ιστολογικη εξετασ"]),
+        ("microbiology_report", ["καλλιέργεια", "καλλιεργεια", "αντιβιόγραμμα", "αντιβιογραμμα"]),
+        ("cardiology_report", ["ηλεκτροκαρδιογράφημα", "ηλεκτροκαρδιογραφημα", "holter", "υπερηχοκαρδιογράφημα", "υπερηχοκαρδιογραφημα"]),
+        ("graph_or_chart_only", ["γράφημα", "γραφημα", "διάγραμμα", "διαγραμμα"]),
+        ("administrative_health_document", ["παραπεμπτικό", "παραπεμπτικο", "άδεια ασθενείας", "αδεια ασθενειας"]),
+    ]
+    for document_type, patterns in narrative_patterns:
+        if any(pattern in low for pattern in patterns):
+            return document_type, 0.90
+
     lab_keywords = [
         # English
         "crp", "esr", "tsh", "vitamin d", "ferritin", "wbc", "rbc", "hgb",
@@ -264,6 +292,7 @@ CRITICAL RULES:
 14. For age-stratified or time-stratified reference ranges (e.g., "3.5-5.0 (>60ετη: 3.4-4.8)", "Πρωί 7-10πμ: 133-537 / Απόγευμα 4-8μμ: 68-327", "8.8-46.3 Χειμερινή / 15.7-60.3 Καλοκαιρινή"), ALWAYS use the FIRST / most general range as reference_low and reference_high. Store the full raw string in reference_text. Never use an age-specific or time-specific sub-range as the primary range unless it is the only one given.
 15. For multi-page documents where the patient header (ΟΝΟΜΑΤΕΠΩΝΥΜΟ, ΗΜΕΡ.ΕΞΕΤΑΣΗΣ) repeats on each page, treat the entire document as ONE exam from the date on the first page. Do not create duplicate metadata entries.
 16. For CGM/glucose sensor reports (containing eHbA1c, MBG, TIR, LBGI, HBGI, LibreView, FreeStyle Libre, αισθητήρας γλυκόζης), set document_type to "cgm_report". CGM PERCENTAGE METRICS (TIR Φυσιολογικό, TIR Χαμηλό, TIR Υψηλό, Χρόνος κάλυψης CGM) do NOT use glucose thresholds (70 mg/dL, 180 mg/dL) as reference_low/reference_high for the PERCENTAGE value. Set reference_low=null, reference_high=null, abnormal_flag="unknown" for ALL CGM metrics. The glucose category description (e.g. "70-180 mg/dL") belongs ONLY in reference_text as a label, never as a numeric percentage boundary.
+17. Narrative documents (certificates, opinions, treatment plans, discharges and administrative medical documents) are not numeric exams. Return an empty results list unless an explicit measurement is present. Extract only explicit source facts. Never create a diagnosis, prescription, or clinical conclusion. Set needs_review=true whenever a condition, treatment, diagnosis or medication statement is extracted.
 17. For CGM reports, use EXACTLY these standardized display_name values (do NOT translate or expand them):
     - "eHbA1c" (not "Εκτιμώμενη HbA1c" or any other variant)
     - "MBG" (not "Μέση Γλυκόζη" or "Mean Blood Glucose")
@@ -293,8 +322,19 @@ Respond with ONLY valid JSON matching this exact schema:
     "exam_date": "YYYY-MM-DD or null",
     "lab_name": "string or null",
     "ordering_doctor": "string or null",
-    "document_type": "lab_panel | imaging_report | mixed_panel | cgm_report",
+    "document_type": "lab_panel | imaging_report | mixed_panel | cgm_report | medical_certificate | medical_opinion | prescription_or_treatment_plan | hospital_discharge | pathology_report | microbiology_report | cardiology_report | graph_or_chart_only | administrative_health_document | generic_medical_document | unknown_needs_review",
     "sections_detected": ["string"]
+  },
+  "document": {
+    "document_subtype": "string or null",
+    "display_title": "string or null",
+    "issue_date": "YYYY-MM-DD or null",
+    "validity_text": "string or null",
+    "doctor_specialty": "string or null",
+    "clinical_summary": {"condition": "explicit source text or null", "treatment_history": "explicit source text or null", "recommended_treatment": "explicit source text or null", "dose": "explicit source text or null", "route_of_administration": "explicit source text or null", "frequency": "explicit source text or null", "purpose": "explicit source text or null"},
+    "needs_review": true,
+    "review_reason": "string or null",
+    "assistant_summary": "PII-minimized source summary or null"
   },
   "results": [
     {
@@ -375,9 +415,10 @@ def _call_openai(ocr_text: str, max_retries: int = 2) -> Optional[dict]:
                 parsed = json.loads(fixed_json)
 
             # Basic structural validation
-            if "results" not in parsed:
+            if "results" not in parsed and "document" not in parsed:
                 logger.warning(f"[AI_NORMALIZER] Attempt {attempt+1}: Missing 'results' key in response")
                 continue
+            parsed.setdefault("results", [])
 
             logger.info(f"[AI_NORMALIZER] Attempt {attempt+1}: Successfully extracted {len(parsed['results'])} results")
             return parsed
@@ -1052,6 +1093,55 @@ def ai_normalize_imaging(text: str) -> ParsedReport:
     )
 
 
+def ai_normalize_narrative(text: str, document_type: str, classifier_confidence: float = 0.40) -> ParsedReport:
+    """Normalize certificates and other narrative documents without fake result rows."""
+    from exams_module.services.document_intelligence import (
+        DOCUMENT_TITLE, build_assistant_summary, fallback_payload, merge_payload, narrative_impressions,
+    )
+    from exams_module.services.terminology_service import map_document_terminology
+
+    fallback = fallback_payload(text, document_type)
+    ai_response = _call_openai(text)
+    metadata = ai_response.get("metadata", {}) if isinstance(ai_response, dict) else {}
+    extracted = ai_response.get("document", {}) if isinstance(ai_response, dict) else {}
+    payload = merge_payload(fallback, extracted)
+    payload["document_type"] = document_type
+    payload["document_subtype"] = payload.get("document_subtype") or extracted.get("document_subtype")
+    payload["display_title"] = extracted.get("display_title") or DOCUMENT_TITLE.get(document_type, DOCUMENT_TITLE["generic_medical_document"])
+    if metadata.get("exam_date") and not payload.get("issue_date"):
+        payload["issue_date"] = metadata.get("exam_date")
+    mappings = map_document_terminology(payload, text)
+    payload["terminology_mappings"] = mappings
+    payload["assistant_summary"] = build_assistant_summary(payload["display_title"], payload)
+    review_reason = payload.get("review_reason") or "Απαιτείται έλεγχος της εξαγωγής πριν από κλινική χρήση."
+
+    return ParsedReport(
+        exam_type=document_type,
+        exam_category="narrative",
+        confidence_score=max(0.25, min(0.95, classifier_confidence)),
+        normalization_status="needs_review",
+        source_lineage={
+            "parser": PARSER_VERSION,
+            "classification": document_type,
+            "extraction": "openai_plus_deterministic_fallback" if ai_response else "deterministic_fallback",
+        },
+        results=[],
+        impressions=[ParsedImpression(**imp) for imp in narrative_impressions(payload)],
+        performed_at=payload.get("issue_date"),
+        ordering_doctor=(payload.get("doctor") or {}).get("name"),
+        validation_summary={"total_extracted": 0, "valid": 0, "narrative_document": True},
+        report_review_reason=review_reason,
+        document_type=document_type,
+        document_subtype=payload.get("document_subtype"),
+        display_title=payload["display_title"],
+        structured_payload=payload,
+        terminology_mappings=mappings,
+        assistant_summary=payload["assistant_summary"],
+        needs_review=bool(payload.get("needs_review", True)),
+        review_reason=review_reason,
+    )
+
+
 # ---------------------------------------------------------------------------
 # Chunked normalization for multi-section PDFs
 # ---------------------------------------------------------------------------
@@ -1139,6 +1229,14 @@ def normalize_document(text: str) -> Optional[ParsedReport]:
 
     label, class_confidence = classify_document(text)
 
+    narrative_types = {
+        "medical_certificate", "medical_opinion", "prescription_or_treatment_plan", "hospital_discharge",
+        "pathology_report", "microbiology_report", "cardiology_report", "graph_or_chart_only",
+        "administrative_health_document", "generic_medical_document", "unknown_needs_review",
+    }
+    if label in narrative_types:
+        return ai_normalize_narrative(text, label, class_confidence)
+
     if label in ("lab", "cgm"):
         # For large multi-section PDFs, split into chunks to avoid memory/timeout
         if len(text) > CHUNK_THRESHOLD:
@@ -1165,17 +1263,5 @@ def normalize_document(text: str) -> Optional[ParsedReport]:
         result.source_lineage["classification"] = "unknown_attempted_lab"
         return result
 
-    # Truly unknown — store for manual review
-    return ParsedReport(
-        exam_type="unknown",
-        exam_category="unknown",
-        confidence_score=0.25,
-        normalization_status="needs_review",
-        source_lineage={"parser": PARSER_VERSION, "classification": "unknown"},
-        results=[],
-        impressions=[ParsedImpression(
-            section_type="narrative",
-            text=text[:2000],
-            review_required=True,
-        )],
-    )
+    # Truly unknown — retain as a review-gated medical document, not a fake lab report.
+    return ai_normalize_narrative(text, "unknown_needs_review", class_confidence)

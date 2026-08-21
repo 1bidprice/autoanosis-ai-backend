@@ -1,0 +1,9 @@
+"""PII-minimized context contract for downstream assistants."""
+from typing import Any, Dict
+def build_assistant_document_context(document_id: str, parsed_report: Any) -> Dict:
+    payload = getattr(parsed_report, "structured_payload", None) or {}
+    clinical = payload.get("clinical_summary") or {}
+    review_reason = getattr(parsed_report, "review_reason", "") or getattr(parsed_report, "report_review_reason", "") or ""
+    needs_review = bool(getattr(parsed_report, "needs_review", False))
+    mappings = [{k: m.get(k) for k in ("field", "original_value", "normalized_value", "semantic_type", "terminology_system", "code", "confidence", "needs_review", "terminology_version")} for m in (getattr(parsed_report, "terminology_mappings", None) or payload.get("terminology_mappings") or []) if isinstance(m, dict)]
+    return {"source_document_id": document_id, "document_type": getattr(parsed_report, "document_type", None) or getattr(parsed_report, "exam_type", "generic_medical_document"), "document_subtype": getattr(parsed_report, "document_subtype", None), "title": getattr(parsed_report, "display_title", None) or payload.get("display_title"), "date": payload.get("issue_date") or getattr(parsed_report, "performed_at", None), "clinical_summary": {k: clinical.get(k) for k in ("condition", "treatment_history", "recommended_treatment", "dose", "route_of_administration", "frequency", "purpose")}, "terminology_mappings": mappings, "confidence": getattr(parsed_report, "confidence_score", None), "needs_review": needs_review, "review_reason": review_reason, "assistant_summary": getattr(parsed_report, "assistant_summary", "") or payload.get("assistant_summary", ""), "assistant_instruction": "Το έγγραφο είναι σημειωμένο για έλεγχο. Περιέγραψέ το ως μη επιβεβαιωμένο και μην το παρουσιάσεις ως διάγνωση ή ενεργή συνταγογράφηση." if needs_review else "Χρησιμοποίησε μόνο τα δομημένα πεδία ως περιγραφή προέλευσης και μην δημιουργείς νέα κλινικά συμπεράσματα."}
