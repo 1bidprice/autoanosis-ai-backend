@@ -380,9 +380,10 @@ def get_patient_reports(patient_id):
             # "mixed" = both numeric results AND narrative text
             has_numeric = len(r.results) > 0
             has_narrative = bool(r.narrative_text or r.findings_json)
+            has_structured_document = bool(getattr(r, "structured_payload", None))
             if has_numeric and has_narrative:
                 report_category = "mixed"
-            elif has_narrative:
+            elif has_narrative or has_structured_document:
                 report_category = "narrative"
             else:
                 report_category = "numeric"
@@ -398,6 +399,11 @@ def get_patient_reports(patient_id):
                 "urine": "Ανάλυση Ούρων",
                 "imaging": "Απεικονιστική Εξέταση",
                 "cgm_report": "Αναφορά Αισθητήρα Γλυκόζης",
+                "medical_certificate": "Ιατρική Βεβαίωση / Γνωμάτευση",
+                "medical_opinion": "Ιατρική Γνωμάτευση",
+                "prescription_or_treatment_plan": "Θεραπευτικό Πλάνο / Αγωγή",
+                "hospital_discharge": "Εξιτήριο Νοσηλείας",
+                "graph_or_chart_only": "Ιατρικό Γράφημα / Διάγραμμα",
                 "unknown": "Ιατρική Αναφορά",
             }
             display_name = r.display_name or _DISPLAY_MAP.get(r.exam_type, r.exam_type)
@@ -427,6 +433,13 @@ def get_patient_reports(patient_id):
                 "source_lineage": r.source_lineage or {},
                 # ── Report-level guidance message (e.g. AGP-only CGM) ──
                 "report_review_reason": getattr(r, 'report_review_reason', '') or '',
+                # ── Universal structured document contract; raw OCR is excluded ──
+                "document_type": r.exam_type,
+                "document_subtype": (getattr(r, "structured_payload", None) or {}).get("document_subtype"),
+                "display_title": (getattr(r, "structured_payload", None) or {}).get("display_title") or display_name,
+                "structured_payload": getattr(r, "structured_payload", None) or {},
+                "terminology_mappings": getattr(r, "terminology_mappings", None) or [],
+                "assistant_summary": (getattr(r, "structured_payload", None) or {}).get("assistant_summary", ""),
                 # ── Numeric results (lab/urine) ──
                 "results": [
                     {
@@ -570,12 +583,19 @@ def get_patient_exam_snapshot(patient_id):
             "urine": "Ανάλυση Ούρων",
             "imaging": "Απεικονιστική Εξέταση",
             "cgm_report": "Αναφορά Αισθητήρα Γλυκόζης",
+            "medical_certificate": "Ιατρική Βεβαίωση / Γνωμάτευση",
+            "medical_opinion": "Ιατρική Γνωμάτευση",
+            "prescription_or_treatment_plan": "Θεραπευτικό Πλάνο / Αγωγή",
+            "hospital_discharge": "Εξιτήριο Νοσηλείας",
+            "graph_or_chart_only": "Ιατρικό Γράφημα / Διάγραμμα",
             "unknown": "Ιατρική Αναφορά",
         }
 
         report_summary = []
         # Also build narrative_exam_context for AI: one entry per narrative/imaging report
         narrative_exam_context = []
+        # Only semantic fields enter assistant context; raw OCR stays outside it.
+        medical_document_context = []
 
         for r in reports:
             abnormal_flags = {"H", "L", "A", "HH", "LL", "CRITICAL"}
@@ -596,6 +616,23 @@ def get_patient_exam_snapshot(patient_id):
                 "summary": r.summary or None,
                 "has_narrative": bool(r.narrative_text or r.findings_json),
             })
+
+            payload = getattr(r, "structured_payload", None) or {}
+            if payload:
+                clinical = payload.get("clinical_summary") if isinstance(payload.get("clinical_summary"), dict) else {}
+                medical_document_context.append({
+                    "source_document_id": r.document_id,
+                    "document_type": r.exam_type,
+                    "document_subtype": payload.get("document_subtype"),
+                    "title": payload.get("display_title") or display_name,
+                    "date": payload.get("issue_date") or (r.performed_at.strftime("%Y-%m-%d") if r.performed_at else None),
+                    "clinical_summary": {k: clinical.get(k) for k in ("condition", "treatment_history", "recommended_treatment", "dose", "route_of_administration", "frequency", "purpose")},
+                    "terminology_mappings": getattr(r, "terminology_mappings", None) or [],
+                    "confidence": float(r.confidence_score) if r.confidence_score is not None else None,
+                    "needs_review": r.normalization_status == "needs_review",
+                    "review_reason": getattr(r, "report_review_reason", "") or "",
+                    "assistant_summary": payload.get("assistant_summary", ""),
+                })
 
             # For imaging/narrative reports: add full narrative to AI context
             if r.narrative_text or r.findings_json:
@@ -668,6 +705,8 @@ def get_patient_exam_snapshot(patient_id):
             # NEW: narrative/imaging reports for AI context
             "narrative_exam_context": narrative_exam_context,
             "narrative_report_count": len(narrative_exam_context),
+            "medical_document_context": medical_document_context,
+            "medical_document_context_count": len(medical_document_context),
             # Medical documents archive
             "medical_documents": medical_docs_list,
             "medical_documents_count": len(medical_docs_list),

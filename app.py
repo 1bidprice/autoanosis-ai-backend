@@ -111,6 +111,18 @@ def run_migrations():
         ("review_reason",     "TEXT"),
         ("disclaimer",        "TEXT"),
     ]
+    _document_cols = [
+        ("document_type", "VARCHAR(64)"),
+        ("document_subtype", "VARCHAR(64)"),
+        ("display_title", "TEXT"),
+        ("semantic_status", "VARCHAR(32)"),
+        ("structured_payload", "JSONB"),
+        ("assistant_summary", "TEXT"),
+    ]
+    _report_cols = [
+        ("structured_payload", "JSONB"),
+        ("terminology_mappings", "JSONB"),
+    ]
 
     # Target both possible table names — migrate whichever exists
     _result_tables = [t for t in ["aa_exam_results", "exam_results"] if t in _existing_tables]
@@ -136,6 +148,17 @@ def run_migrations():
         migrations.append(
             f"ALTER TABLE {_tbl} ADD COLUMN IF NOT EXISTS report_review_reason TEXT DEFAULT ''"
         )
+
+    # v4 — universal semantic document fields
+    _document_tables = [t for t in ["aa_exam_documents", "exam_documents"] if t in _existing_tables]
+    if not _document_tables and not _is_sqlite:
+        _document_tables = ["aa_exam_documents"]
+    for _tbl in _document_tables:
+        for _col, _coltype in _document_cols:
+            migrations.append(f"ALTER TABLE {_tbl} ADD COLUMN IF NOT EXISTS {_col} {_coltype}")
+    for _tbl in _report_tables:
+        for _col, _coltype in _report_cols:
+            migrations.append(f"ALTER TABLE {_tbl} ADD COLUMN IF NOT EXISTS {_col} {_coltype}")
 
     with engine.connect() as _conn:
         for _sql in migrations:
@@ -626,8 +649,35 @@ def build_selective_context(snap: dict, intent: str) -> str:
                 exam_parts.append(f"ΑΠΕΙΚΟΝΙΣΤΙΚΕΣ ΕΞΕΤΑΣΕΙΣ ({len(narrative_parts)}):")
                 exam_parts.extend(narrative_parts)
 
+    # Universal document payload. Only structured, PII-minimized content is
+    # admitted into the assistant context; raw OCR remains an audit artifact.
+    medical_documents = snap.get("medical_document_context") or snap.get("structured_medical_documents") or []
+    if isinstance(medical_documents, list) and medical_documents:
+        document_parts = []
+        for item in medical_documents[:20]:
+            if not isinstance(item, dict):
+                continue
+            document_type = item.get("document_type") or "generic_medical_document"
+            title = item.get("title") or item.get("display_title") or "Ιατρικό Έγγραφο"
+            document_date = item.get("date") or item.get("issue_date") or item.get("performed_at") or "άγνωστη ημερομηνία"
+            summary = str(item.get("assistant_summary") or "").strip()
+            clinical = item.get("clinical_summary") if isinstance(item.get("clinical_summary"), dict) else {}
+            if not summary:
+                factual = []
+                if clinical.get("condition"):
+                    factual.append(f"Αναφερόμενη πάθηση: {clinical['condition']}")
+                if clinical.get("recommended_treatment"):
+                    factual.append(f"Αναφερόμενη αγωγή: {clinical['recommended_treatment']}")
+                summary = "; ".join(factual) or "Δεν υπάρχει επαρκής δομημένη περίληψη."
+            document_parts.extend([f"[{document_type}] {title} — {document_date}", f"  Δομημένη περίληψη: {summary}"])
+            if item.get("needs_review"):
+                document_parts.append("  ΣΗΜΑΝΣΗ ΕΛΕΓΧΟΥ: Μην το παρουσιάσεις ως επιβεβαιωμένη διάγνωση ή ενεργή συνταγογράφηση.")
+        if document_parts:
+            exam_parts.append("ΙΑΤΡΙΚΑ ΕΓΓΑΦΑ (δομημένο περιεχόμενο):")
+            exam_parts.extend(document_parts)
+
     if exam_parts:
-        parts.append("3. ΕΞΕΤΑΣΕΙΣ:\n" + "\n".join(exam_parts))
+        parts.append("3. ΕΞΕΤΑΣΕΙΣ & ΙΑΤΡΙΚΑ ΕΓΓΡΑΦΑ:\n" + "\n".join(exam_parts))
 
     # 4. BEST History
     best_history = snap.get("best_history") or []

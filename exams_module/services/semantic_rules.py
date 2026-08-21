@@ -537,6 +537,7 @@ def _evaluate_lab(
 # ---------------------------------------------------------------------------
 
 DOCUMENT_TYPE_TO_REPORT_TYPE = {
+    "lab_results": "blood_lab_report",
     "lab_panel": "blood_lab_report",
     "blood_lab_report": "blood_lab_report",
     "cgm_report": "cgm_report",
@@ -545,11 +546,19 @@ DOCUMENT_TYPE_TO_REPORT_TYPE = {
     "mixed_panel": "blood_lab_report",   # treat mixed as lab, evaluate per metric
     "urinalysis": "urinalysis",
     "urine_report": "urinalysis",
+    "urine_test": "urinalysis",
     "microbiology_report": "microbiology_report",
     "pathology_report": "pathology_report",
     "cardiology_report": "imaging_report",  # narrative-based
     "medication_plan": "medication_plan",
     "prescription": "medication_plan",
+    "prescription_or_treatment_plan": "medication_plan",
+    "medical_certificate": "generic_medical_document",
+    "medical_opinion": "generic_medical_document",
+    "hospital_discharge": "generic_medical_document",
+    "graph_or_chart_only": "generic_medical_document",
+    "administrative_health_document": "generic_medical_document",
+    "unknown_needs_review": "generic_medical_document",
     "generic_medical_document": "generic_medical_document",
 }
 
