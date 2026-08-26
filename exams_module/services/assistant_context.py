@@ -113,59 +113,9 @@ def build_assistant_document_context(document_id: str, parsed_report: Any) -> Di
         "assistant_summary": payload.get("assistant_summary", ""),
         
         "assistant_instruction": (
-            
             "Το έγγραφο είναι σημειωμένο για έλεγχο. Περιέγραψέ το ως μη επιβεβαιωμένο και μην το παρουσιάσεις ως διάγνωση ή ενεργή συνταγογράφηση."
-            
             if needs_review else
-            
-            "Χρησιμοποίησε μόνο τα δομημένα πεδία ως περιγραφή προέλευσης και μην δημιουργείς 
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
+            "Χρησιμοποίησε μόνο τα δομημένα πεδία ως περιγραφή προέλευσης και μην δημιουργείς νέα κλινικά συμπεράσματα."
+        ),
+    }
+    return _without_sensitive_values(context)
