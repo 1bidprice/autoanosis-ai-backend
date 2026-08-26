@@ -21,6 +21,7 @@ from sqlalchemy.orm import joinedload
 from exams_module.db.database import get_db
 from exams_module.models.exam_models import ExamDocument, ExamReport, ExamReviewQueue
 from exams_module.services.exam_service import create_document, process_document, log_event
+from exams_module.services.assistant_context import build_assistant_document_context
 from exams_module.schemas.exam_schemas import DocumentCreate
 
 logger = logging.getLogger(__name__)
@@ -439,7 +440,7 @@ def get_patient_reports(patient_id):
                 "display_title": (getattr(r, "structured_payload", None) or {}).get("display_title") or display_name,
                 "structured_payload": getattr(r, "structured_payload", None) or {},
                 "terminology_mappings": getattr(r, "terminology_mappings", None) or [],
-                "assistant_summary": (getattr(r, "structured_payload", None) or {}).get("assistant_summary", ""),
+                "assistant_summary": (getattr(r, "structured_payload", None) or {}).get("assistant_summary", "") or r.summary or "",
                 # ── Numeric results (lab/urine) ──
                 "results": [
                     {
@@ -619,20 +620,7 @@ def get_patient_exam_snapshot(patient_id):
 
             payload = getattr(r, "structured_payload", None) or {}
             if payload:
-                clinical = payload.get("clinical_summary") if isinstance(payload.get("clinical_summary"), dict) else {}
-                medical_document_context.append({
-                    "source_document_id": r.document_id,
-                    "document_type": r.exam_type,
-                    "document_subtype": payload.get("document_subtype"),
-                    "title": payload.get("display_title") or display_name,
-                    "date": payload.get("issue_date") or (r.performed_at.strftime("%Y-%m-%d") if r.performed_at else None),
-                    "clinical_summary": {k: clinical.get(k) for k in ("condition", "treatment_history", "recommended_treatment", "dose", "route_of_administration", "frequency", "purpose")},
-                    "terminology_mappings": getattr(r, "terminology_mappings", None) or [],
-                    "confidence": float(r.confidence_score) if r.confidence_score is not None else None,
-                    "needs_review": r.normalization_status == "needs_review",
-                    "review_reason": getattr(r, "report_review_reason", "") or "",
-                    "assistant_summary": payload.get("assistant_summary", ""),
-                })
+                medical_document_context.append(build_assistant_document_context(r.document_id, r))
 
             # For imaging/narrative reports: add full narrative to AI context
             if r.narrative_text or r.findings_json:
@@ -656,7 +644,7 @@ def get_patient_exam_snapshot(patient_id):
                     "lab_name": r.lab_name,
                     "ordering_doctor": r.ordering_doctor,
                     # Full narrative for AI to read
-                    "narrative_text": r.narrative_text or findings_text or None,
+                    "narrative_text": None if payload else (r.narrative_text or findings_text or None),
                     "summary": r.summary,
                     "findings": r.findings_json or [],
                 })
@@ -691,7 +679,7 @@ def get_patient_exam_snapshot(patient_id):
                     "document_date": d.document_date.isoformat() if d.document_date else None,
                     "uploaded_at": d.uploaded_at.isoformat() if d.uploaded_at else None,
                     "mime_type": d.mime_type or "",
-                    "extracted_text": d.extracted_text or "",
+                    "has_extracted_text": bool(d.extracted_text),
                 })
         except Exception as _doc_err:
             logger.warning(f"[SNAPSHOT] Could not fetch medical_documents: {_doc_err}")
