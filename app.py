@@ -562,6 +562,27 @@ def build_selective_context(snap: dict, intent: str) -> str:
 
     exam_parts = []
 
+    # Older mobile clients can provide flattened results without report-level metadata.
+    # Create a deterministic chronology anchor rather than letting stale archive text
+    # answer a question about the latest examination.
+    if not isinstance(report_summary, list) or not report_summary:
+        result_dates = []
+        if isinstance(structured_results, list):
+            for item in structured_results:
+                if not isinstance(item, dict):
+                    continue
+                value = item.get("test_date") or item.get("performed_at") or ""
+                if isinstance(value, str) and re.fullmatch(r"\d{4}-\d{2}-\d{2}", value[:10]):
+                    result_dates.append(value[:10])
+        if result_dates:
+            latest_result_date = max(result_dates)
+            exam_parts.append(
+                "ΧΡΟΝΟΛΟΓΙΚΟΣ ΚΑΝΟΝΑΣ: Η νεότερη διαθέσιμη ημερομηνία "
+                f"εργαστηριακής εξέτασης είναι {latest_result_date}. "
+                "Για ερώτηση σχετικά με την τελευταία εξέταση, χρησιμοποίησε αυτή "
+                "την ημερομηνία εκτός αν ζητείται ρητά συγκεκριμένος τύπος εξέτασης."
+            )
+
     if isinstance(report_summary, list) and report_summary:
         # Build a temporal header: total reports + per-report summary line
         # The most recent report is first (sorted by performed_at DESC in the backend)
@@ -831,16 +852,25 @@ def extract_context_from_wp_push(wp_context: dict, message: str = "") -> str:
     if not wp_context or not isinstance(wp_context, dict):
         return ""
 
-    # Shape A: pre-formatted context_text (legacy — use as-is)
+    # Legacy context_text may contain an old WordPress cache. It cannot override
+    # structured Render examinations that are ordered by performed_at.
+    structured_exam_keys = (
+        "report_summary", "structured_exam_results", "test_results",
+        "narrative_exam_context", "medical_document_context",
+        "structured_medical_documents",
+    )
+    has_current_structured_exams = any(bool(wp_context.get(key)) for key in structured_exam_keys)
+
+    # Shape A: pre-formatted context_text (legacy — only with no structured exams)
     ct = wp_context.get("context_text")
-    if isinstance(ct, str) and ct.strip():
+    if isinstance(ct, str) and ct.strip() and not has_current_structured_exams:
         return ct.strip()
 
     # Shape A: nested data.context_text
     inner = wp_context.get("data") or {}
     if isinstance(inner, dict):
         ct = inner.get("context_text")
-        if isinstance(ct, str) and ct.strip():
+        if isinstance(ct, str) and ct.strip() and not has_current_structured_exams:
             return ct.strip()
 
     # Shape A: unified snapshot
