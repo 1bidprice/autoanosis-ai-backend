@@ -16,6 +16,7 @@ class ContinuityCoreTests(unittest.TestCase):
                     "fact_type": "exam.result",
                     "fact_key": "exam.crp",
                     "value": {"value": 4.2},
+                    "unit": "mg/L",
                     "source": "uploaded_document",
                     "observed_at": "2026-08-01T08:00:00Z",
                     "status": "user_reported",
@@ -24,6 +25,7 @@ class ContinuityCoreTests(unittest.TestCase):
                     "fact_type": "exam.result",
                     "fact_key": "exam.crp",
                     "value": {"value": 2.1},
+                    "unit": "mg/L",
                     "source": "uploaded_document",
                     "observed_at": "2026-09-01T08:00:00Z",
                     "status": "user_reported",
@@ -174,6 +176,53 @@ class ContinuityCoreTests(unittest.TestCase):
         pain_change = next(change for change in summary["changes"] if change["fact_key"] == "checkin.pain")
         self.assertEqual(pain_change["from"], 5)
         self.assertEqual(pain_change["to"], 3)
+
+
+    def test_exam_unit_mismatch_is_not_presented_as_change(self):
+        summary = build_continuity_summary(
+            [
+                {
+                    "fact_type": "exam.result",
+                    "fact_key": "exam.marker",
+                    "value": {"value": 10},
+                    "unit": "mg/L",
+                    "source": "uploaded_document",
+                    "observed_at": "2026-08-01T08:00:00Z",
+                },
+                {
+                    "fact_type": "exam.result",
+                    "fact_key": "exam.marker",
+                    "value": {"value": 1},
+                    "unit": "mg/dL",
+                    "source": "uploaded_document",
+                    "observed_at": "2026-09-01T08:00:00Z",
+                },
+            ],
+            now=NOW,
+        )
+        self.assertEqual(summary["changes"], [])
+
+    def test_exam_needs_review_is_not_mislabeled_as_conflict(self):
+        facts = facts_from_autoanosis_context(
+            {
+                "structured_exam_results": [
+                    {
+                        "report_id": "report-1",
+                        "display_name": "Example Marker",
+                        "value_numeric": 12.3,
+                        "unit": "mg/L",
+                        "performed_at": "2026-09-10T08:00:00Z",
+                        "needs_review": True,
+                        "review_reason": "OCR ambiguity",
+                        "parser_confidence": 0.62,
+                    }
+                ]
+            }
+        )
+        summary = build_continuity_summary(facts, now=NOW)
+        self.assertEqual(summary["conflicting"], [])
+        self.assertEqual(summary["review_required"][0]["fact_key"], "exam.example_marker")
+        self.assertEqual(summary["next_actions"][0]["type"], "review")
 
     def test_undated_medication_keeps_unknown_currentness(self):
         facts = facts_from_autoanosis_context(
