@@ -48,6 +48,7 @@ from exams_module.api.audit_temp import audit_bp
 from exams_module.api.role_sync import role_sync_bp
 from exams_module.api.review_admin import review_admin_bp
 from exams_module.api.medical_documents import medical_docs_bp
+from continuity_core.api import continuity_bp
 from exams_module.db.database import init_db
 
 # ---------------------------------------------------------------------------
@@ -70,6 +71,7 @@ app.register_blueprint(audit_bp)
 app.register_blueprint(role_sync_bp)
 app.register_blueprint(review_admin_bp)
 app.register_blueprint(medical_docs_bp)
+app.register_blueprint(continuity_bp)
 
 # Initialise exams tables on startup (safe no-op if already exist)
 try:
@@ -1640,6 +1642,7 @@ def health_check():
             "exams_ingestion_normalizer",
             "structured_exam_reports",
             "exam_review_queue",
+            "continuity_core_preview_v1",
         ],
         "config": {
             "proxy_secret_configured": bool(AUTOA_PROXY_SECRET),
