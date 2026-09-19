@@ -121,6 +121,53 @@ class ContinuityCoreTests(unittest.TestCase):
         self.assertTrue(any(f["fact_key"] == "condition.primary" for f in facts))
         self.assertTrue(any(f["fact_key"] == "medication.7" for f in facts))
 
+    def test_adapter_supports_current_mobile_envelopes(self):
+        facts = facts_from_autoanosis_context(
+            {
+                "home_snapshot": {
+                    "today_checkin": {
+                        "date": "2026-09-19",
+                        "pain_level": 3,
+                        "fatigue_level": 4,
+                        "energy_level": 6,
+                        "mood_level": 7,
+                        "stiffness_level": 2,
+                        "inflammation_level": 3,
+                    }
+                },
+                "today_doses": {
+                    "date": "2026-09-19",
+                    "count": 1,
+                    "doses": [
+                        {
+                            "dose_id": 44,
+                            "medication_id": 7,
+                            "scheduled_date": "2026-09-19",
+                            "scheduled_time": "09:00:00",
+                            "status": "taken",
+                        }
+                    ],
+                },
+                "longitudinal_checkin_analytics": {
+                    "recent_records": [
+                        {
+                            "date": "2026-09-18",
+                            "pain": 5,
+                            "fatigue": 6,
+                            "energy": 4,
+                            "mood": 5,
+                            "stiffness": 4,
+                            "inflammation": 5,
+                        }
+                    ]
+                },
+            }
+        )
+        keys = {fact["fact_key"] for fact in facts}
+        self.assertIn("checkin.2026-09-19", keys)
+        self.assertIn("checkin.2026-09-18", keys)
+        self.assertIn("dose.44", keys)
+
     def test_undated_medication_keeps_unknown_currentness(self):
         facts = facts_from_autoanosis_context(
             {
