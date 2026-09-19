@@ -177,24 +177,24 @@ def _safe_action(kind: str, fact_key: str | None = None, domain: str | None = No
         return {
             "type": "confirm_or_update",
             "target": fact_key or "",
-            "message": "Confirm or update this record before relying on it as current.",
+            "message": "Επιβεβαίωσε ή ενημέρωσε αυτή την καταχώρηση πριν τη θεωρήσεις τρέχουσα.",
         }
     if kind == "conflict":
         return {
             "type": "review_conflict",
             "target": fact_key or "",
-            "message": "Review the conflicting records and keep both sources visible until clarified.",
+            "message": "Έλεγξε τις αντικρουόμενες καταχωρήσεις και κράτησε ορατές τις πηγές μέχρι να διευκρινιστούν.",
         }
     if kind == "missing":
         return {
             "type": "add_missing_data",
             "target": domain or "",
-            "message": "Add or connect this missing data domain if it is relevant to your Autoanosis record.",
+            "message": "Συμπλήρωσε ή σύνδεσε αυτά τα δεδομένα, αν είναι σχετικά με το ιστορικό σου στο Autoanosis.",
         }
     return {
         "type": "review",
         "target": fact_key or domain or "",
-        "message": "Review this item in Autoanosis.",
+        "message": "Έλεγξε αυτή την καταχώρηση στο Autoanosis.",
     }
 
 
