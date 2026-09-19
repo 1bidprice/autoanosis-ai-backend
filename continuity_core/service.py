@@ -218,12 +218,31 @@ def build_continuity_summary(
         now = now.astimezone(timezone.utc)
 
     normalised = []
+    seen_fingerprints: set[str] = set()
     for raw in facts:
         if not isinstance(raw, dict):
             continue
         fact = _normalise_fact(raw, now)
-        if fact is not None:
-            normalised.append(fact)
+        if fact is None:
+            continue
+
+        # The same underlying record may arrive through both home snapshot and
+        # longitudinal analytics. Collapse exact duplicates so the "previous"
+        # value really means a previous observation, not the same day twice.
+        fingerprint = repr(
+            (
+                fact.get("fact_key"),
+                fact.get("observed_at"),
+                fact.get("updated_at"),
+                _stable_value(fact.get("value")),
+                fact.get("source"),
+                fact.get("status"),
+            )
+        )
+        if fingerprint in seen_fingerprints:
+            continue
+        seen_fingerprints.add(fingerprint)
+        normalised.append(fact)
 
     grouped: dict[str, list[dict[str, Any]]] = defaultdict(list)
     for fact in normalised:
