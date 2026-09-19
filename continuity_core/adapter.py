@@ -139,7 +139,13 @@ def facts_from_autoanosis_context(context: dict[str, Any]) -> list[dict[str, Any
         )
 
     # --- Today's dose states (mobile context) ---
-    for item in _as_list(context.get("today_doses")):
+    today_doses_raw = context.get("today_doses")
+    if isinstance(today_doses_raw, dict):
+        today_dose_items = today_doses_raw.get("doses") or []
+    else:
+        today_dose_items = today_doses_raw or []
+
+    for item in _as_list(today_dose_items):
         if not isinstance(item, dict):
             continue
         identifier = _first(item, "dose_id", "id", "medication_id")
@@ -168,6 +174,65 @@ def facts_from_autoanosis_context(context: dict[str, Any]) -> list[dict[str, Any
         )
 
     # --- Check-ins ---
+    # Mobile home snapshot: today's canonical check-in.
+    home_snapshot = context.get("home_snapshot")
+    if isinstance(home_snapshot, dict):
+        today_checkin = home_snapshot.get("today_checkin")
+        if isinstance(today_checkin, dict):
+            observed = _first(today_checkin, "date", "observed_at", "created_at")
+            value = {
+                "pain": _first(today_checkin, "pain", "pain_level"),
+                "fatigue": _first(today_checkin, "fatigue", "fatigue_level"),
+                "energy": _first(today_checkin, "energy", "energy_level"),
+                "mood": _first(today_checkin, "mood", "mood_level"),
+                "stiffness": _first(today_checkin, "stiffness", "stiffness_level"),
+                "inflammation": _first(today_checkin, "inflammation", "inflammation_level"),
+                "notes": today_checkin.get("notes"),
+            }
+            value = {key: val for key, val in value.items() if val is not None}
+            _add_fact(
+                facts,
+                fact_type="checkin.event",
+                fact_key=f"checkin.{_safe_key(observed or 'today')}",
+                value=value,
+                source="check_in",
+                observed_at=observed,
+                status="user_reported",
+            )
+
+    # Mobile longitudinal analytics carries recent_records from the canonical
+    # check-in analytics endpoint. These are real records, not inferred trends.
+    longitudinal = context.get("longitudinal_checkin_analytics")
+    if isinstance(longitudinal, dict):
+        for item in _as_list(longitudinal.get("recent_records")):
+            if not isinstance(item, dict):
+                continue
+            observed = _first(item, "date", "observed_at", "created_at")
+            if not observed:
+                continue
+            value = {
+                key: item.get(key)
+                for key in (
+                    "pain",
+                    "fatigue",
+                    "energy",
+                    "mood",
+                    "stiffness",
+                    "inflammation",
+                    "notes",
+                )
+                if item.get(key) is not None
+            }
+            _add_fact(
+                facts,
+                fact_type="checkin.event",
+                fact_key=f"checkin.{_safe_key(observed)}",
+                value=value,
+                source="check_in",
+                observed_at=observed,
+                status="user_reported",
+            )
+
     checkins = context.get("recent_checkins")
     if isinstance(checkins, dict):
         checkin_items = (
