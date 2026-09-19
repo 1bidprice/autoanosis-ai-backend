@@ -1,0 +1,30 @@
+name: Continuity Core CI
+
+on:
+  pull_request:
+    paths:
+      - "continuity_core/**"
+      - "tests/test_continuity_core.py"
+      - "app.py"
+      - ".github/workflows/continuity-core-ci.yml"
+  push:
+    branches:
+      - "feature/continuity-core-v1"
+    paths:
+      - "continuity_core/**"
+      - "tests/test_continuity_core.py"
+      - "app.py"
+      - ".github/workflows/continuity-core-ci.yml"
+
+jobs:
+  continuity-core:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+      - name: Compile continuity modules
+        run: python -m compileall continuity_core tests/test_continuity_core.py
+      - name: Run continuity unit tests
+        run: python -m unittest tests.test_continuity_core -v
