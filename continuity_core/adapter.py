@@ -63,6 +63,54 @@ def _add_fact(
     )
 
 
+
+def _add_checkin_metrics(
+    facts: list[dict[str, Any]],
+    item: dict[str, Any],
+    *,
+    observed_at: Any,
+    source_reference_id: Any = None,
+) -> None:
+    metric_aliases = {
+        "pain": ("pain", "pain_level"),
+        "fatigue": ("fatigue", "fatigue_level"),
+        "energy": ("energy", "energy_level"),
+        "mood": ("mood", "mood_level"),
+        "stiffness": ("stiffness", "stiffness_level"),
+        "inflammation": ("inflammation", "inflammation_level"),
+    }
+    for metric, aliases in metric_aliases.items():
+        value = _first(item, *aliases)
+        if value is None:
+            continue
+        _add_fact(
+            facts,
+            fact_type="checkin.metric",
+            fact_key=f"checkin.{metric}",
+            value=value,
+            unit="/10",
+            source="check_in",
+            source_reference_id=source_reference_id,
+            observed_at=observed_at,
+            updated_at=item.get("updated_at"),
+            status="user_reported",
+        )
+
+    notes = item.get("notes")
+    if notes:
+        _add_fact(
+            facts,
+            fact_type="checkin.note",
+            fact_key="checkin.notes",
+            value=str(notes),
+            source="check_in",
+            source_reference_id=source_reference_id,
+            observed_at=observed_at,
+            updated_at=item.get("updated_at"),
+            status="user_reported",
+        )
+
+
 def facts_from_autoanosis_context(context: dict[str, Any]) -> list[dict[str, Any]]:
     """Normalize currently known WP/mobile context shapes into canonical facts."""
 
@@ -180,24 +228,11 @@ def facts_from_autoanosis_context(context: dict[str, Any]) -> list[dict[str, Any
         today_checkin = home_snapshot.get("today_checkin")
         if isinstance(today_checkin, dict):
             observed = _first(today_checkin, "date", "observed_at", "created_at")
-            value = {
-                "pain": _first(today_checkin, "pain", "pain_level"),
-                "fatigue": _first(today_checkin, "fatigue", "fatigue_level"),
-                "energy": _first(today_checkin, "energy", "energy_level"),
-                "mood": _first(today_checkin, "mood", "mood_level"),
-                "stiffness": _first(today_checkin, "stiffness", "stiffness_level"),
-                "inflammation": _first(today_checkin, "inflammation", "inflammation_level"),
-                "notes": today_checkin.get("notes"),
-            }
-            value = {key: val for key, val in value.items() if val is not None}
-            _add_fact(
+            _add_checkin_metrics(
                 facts,
-                fact_type="checkin.event",
-                fact_key=f"checkin.{_safe_key(observed or 'today')}",
-                value=value,
-                source="check_in",
+                today_checkin,
                 observed_at=observed,
-                status="user_reported",
+                source_reference_id=_first(today_checkin, "id", "checkin_id"),
             )
 
     # Mobile longitudinal analytics carries recent_records from the canonical
@@ -210,27 +245,11 @@ def facts_from_autoanosis_context(context: dict[str, Any]) -> list[dict[str, Any
             observed = _first(item, "date", "observed_at", "created_at")
             if not observed:
                 continue
-            value = {
-                key: item.get(key)
-                for key in (
-                    "pain",
-                    "fatigue",
-                    "energy",
-                    "mood",
-                    "stiffness",
-                    "inflammation",
-                    "notes",
-                )
-                if item.get(key) is not None
-            }
-            _add_fact(
+            _add_checkin_metrics(
                 facts,
-                fact_type="checkin.event",
-                fact_key=f"checkin.{_safe_key(observed)}",
-                value=value,
-                source="check_in",
+                item,
                 observed_at=observed,
-                status="user_reported",
+                source_reference_id=_first(item, "id", "checkin_id"),
             )
 
     checkins = context.get("recent_checkins")
@@ -249,29 +268,11 @@ def facts_from_autoanosis_context(context: dict[str, Any]) -> list[dict[str, Any
             continue
         observed = _first(item, "observed_at", "created_at", "date", "checkin_date")
         identifier = _first(item, "id", "checkin_id", observed, index)
-        value = {
-            key: item.get(key)
-            for key in (
-                "pain",
-                "fatigue",
-                "energy",
-                "mood",
-                "stiffness",
-                "inflammation",
-                "notes",
-            )
-            if item.get(key) is not None
-        }
-        _add_fact(
+        _add_checkin_metrics(
             facts,
-            fact_type="checkin.event",
-            fact_key=f"checkin.{_safe_key(identifier)}",
-            value=value,
-            source="check_in",
-            source_reference_id=_first(item, "id", "checkin_id"),
+            item,
             observed_at=observed,
-            updated_at=item.get("updated_at"),
-            status="user_reported",
+            source_reference_id=_first(item, "id", "checkin_id"),
         )
 
     # --- Structured exams / labs ---
