@@ -82,6 +82,21 @@ def _same_value(left: Any, right: Any) -> bool:
     return _stable_value(left) == _stable_value(right)
 
 
+def _comparable_for_change(previous: dict[str, Any], latest: dict[str, Any]) -> bool:
+    """Return whether two observations may be compared as a longitudinal change.
+
+    Lab/exam values are only compared when both observations carry the same
+    explicit unit. This avoids presenting a unit conversion mismatch as a
+    clinical trend.
+    """
+    fact_type = str(latest.get("fact_type") or "").lower()
+    if fact_type.startswith("exam.") or fact_type.startswith("lab."):
+        previous_unit = str(previous.get("unit") or "").strip().casefold()
+        latest_unit = str(latest.get("unit") or "").strip().casefold()
+        return bool(previous_unit and latest_unit and previous_unit == latest_unit)
+    return True
+
+
 def _normalise_fact(raw: dict[str, Any], now: datetime) -> dict[str, Any] | None:
     fact_key = str(raw.get("fact_key") or "").strip()
     fact_type = str(raw.get("fact_type") or "").strip()
@@ -106,6 +121,9 @@ def _normalise_fact(raw: dict[str, Any], now: datetime) -> dict[str, Any] | None
     provenance = raw.get("provenance")
     if not isinstance(provenance, dict):
         provenance = {}
+
+    review_required = bool(raw.get("review_required") or provenance.get("needs_review"))
+    review_reason = raw.get("review_reason") or provenance.get("review_reason")
 
     stale_reason = None
     if status == "outdated":
@@ -145,6 +163,8 @@ def _normalise_fact(raw: dict[str, Any], now: datetime) -> dict[str, Any] | None
         "confidence": confidence,
         "currentness": currentness,
         "stale_reason": stale_reason,
+        "review_required": review_required,
+        "review_reason": review_reason,
         "provenance": deepcopy(provenance),
     }
 
@@ -252,6 +272,7 @@ def build_continuity_summary(
     changes: list[dict[str, Any]] = []
     stale: list[dict[str, Any]] = []
     conflicting: list[dict[str, Any]] = []
+    review_required: list[dict[str, Any]] = []
 
     for fact_key, items in grouped.items():
         ordered = sorted(items, key=_fact_sort_key)
@@ -269,6 +290,19 @@ def build_continuity_summary(
                 }
             )
 
+        if latest.get("review_required"):
+            review_required.append(
+                {
+                    "fact_key": fact_key,
+                    "fact_type": latest["fact_type"],
+                    "source": latest["source"],
+                    "source_reference_id": latest.get("source_reference_id"),
+                    "observed_at": latest.get("observed_at"),
+                    "confidence": latest.get("confidence", "unknown"),
+                    "reason": latest.get("review_reason"),
+                }
+            )
+
         explicit_conflicts = [item for item in ordered if item["status"] == "conflicting"]
         if explicit_conflicts:
             conflicting.append(
@@ -282,7 +316,7 @@ def build_continuity_summary(
 
         if len(ordered) >= 2:
             previous = ordered[-2]
-            if not _same_value(previous.get("value"), latest.get("value")):
+            if _comparable_for_change(previous, latest) and not _same_value(previous.get("value"), latest.get("value")):
                 changes.append(
                     {
                         "fact_key": fact_key,
@@ -299,6 +333,7 @@ def build_continuity_summary(
     changes.sort(key=lambda item: item["fact_key"])
     stale.sort(key=lambda item: item["fact_key"])
     conflicting.sort(key=lambda item: item["fact_key"])
+    review_required.sort(key=lambda item: item["fact_key"])
 
     present_domains = sorted({_domain_from_type(item["fact_type"]) for item in normalised})
     required = sorted({str(item).strip().lower() for item in (required_domains or []) if str(item).strip()})
@@ -317,6 +352,8 @@ def build_continuity_summary(
         next_actions.append(_safe_action("stale", fact_key=item["fact_key"]))
     for item in conflicting:
         next_actions.append(_safe_action("conflict", fact_key=item["fact_key"]))
+    for item in review_required:
+        next_actions.append(_safe_action("review", fact_key=item["fact_key"]))
     for domain in missing:
         next_actions.append(_safe_action("missing", domain=domain))
 
@@ -339,6 +376,7 @@ def build_continuity_summary(
         "changes": changes,
         "stale": stale,
         "conflicting": conflicting,
+        "review_required": review_required,
         "next_actions": next_actions,
         "safety": {
             "mode": "process_guidance_only",
