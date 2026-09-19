@@ -164,9 +164,16 @@ class ContinuityCoreTests(unittest.TestCase):
             }
         )
         keys = {fact["fact_key"] for fact in facts}
-        self.assertIn("checkin.2026-09-19", keys)
-        self.assertIn("checkin.2026-09-18", keys)
+        self.assertIn("checkin.pain", keys)
+        self.assertIn("checkin.fatigue", keys)
+        self.assertIn("checkin.energy", keys)
+        self.assertIn("checkin.mood", keys)
         self.assertIn("dose.44", keys)
+
+        summary = build_continuity_summary(facts, now=NOW)
+        pain_change = next(change for change in summary["changes"] if change["fact_key"] == "checkin.pain")
+        self.assertEqual(pain_change["from"], 5)
+        self.assertEqual(pain_change["to"], 3)
 
     def test_undated_medication_keeps_unknown_currentness(self):
         facts = facts_from_autoanosis_context(
