@@ -323,10 +323,11 @@ def facts_from_autoanosis_context(context: dict[str, Any]) -> list[dict[str, Any
             source_reference_id=_first(item, "report_id", "document_id", "id"),
             observed_at=observed,
             updated_at=item.get("updated_at"),
-            status="conflicting" if needs_review else "user_reported",
+            status="user_reported",
             confidence=confidence,
             provenance={
                 "normalization_status": item.get("normalization_status"),
+                "needs_review": needs_review,
                 "review_reason": item.get("review_reason"),
             },
         )
