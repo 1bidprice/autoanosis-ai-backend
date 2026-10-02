@@ -40,6 +40,7 @@ from zoneinfo import ZoneInfo
 from flask import Flask, request, jsonify, send_file
 from flask_cors import CORS
 from environment import SETTINGS
+from grounding import build_grounding_manifest, build_context_fact_index
 from openai import OpenAI
 from identity import verify_identity_token
 from ocr_endpoint import ocr_bp
@@ -1818,10 +1819,21 @@ def chat():
 
         logger.info(f"[CHAT] user={user_id} conv={conversation_id} intent={intent}")
 
+        grounding = build_grounding_manifest(
+            wp_context if isinstance(wp_context, dict) else None,
+            snapshot,
+            snapshot_source,
+            intent,
+        )
+        grounding["fact_index"] = build_context_fact_index(
+            wp_context if isinstance(wp_context, dict) else None
+        )
+
         response_payload = {
             "reply": ai_response,
             "conversation_id": conversation_id,
-            "intent": intent
+            "intent": intent,
+            "grounding": grounding,
         }
         # Cache for idempotency (blocks duplicate sends within 10s)
         _store_idempotency(user_id, user_message, response_payload)
