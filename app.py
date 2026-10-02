@@ -40,7 +40,7 @@ from zoneinfo import ZoneInfo
 from flask import Flask, request, jsonify, send_file
 from flask_cors import CORS
 from environment import SETTINGS
-from grounding import build_grounding_manifest
+from grounding import build_grounding_manifest, build_context_fact_index
 from openai import OpenAI
 from identity import verify_identity_token
 from ocr_endpoint import ocr_bp
@@ -1824,6 +1824,9 @@ def chat():
             snapshot,
             snapshot_source,
             intent,
+        )
+        grounding["fact_index"] = build_context_fact_index(
+            wp_context if isinstance(wp_context, dict) else None
         )
 
         response_payload = {
