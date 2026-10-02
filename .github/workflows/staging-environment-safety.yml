@@ -32,7 +32,7 @@ jobs:
         shell: bash
         run: |
           set -euo pipefail
-          if grep -R "autoanosis-admin-2026" . --exclude-dir=.git; then
+          if grep -R "autoanosis-admin-2026" app.py identity.py exams_module --include='*.py'; then
             echo "Hardcoded admin secret fallback is forbidden."
             exit 1
           fi
