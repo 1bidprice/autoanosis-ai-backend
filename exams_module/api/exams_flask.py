@@ -411,6 +411,7 @@ def get_patient_reports(patient_id):
             out.append({
                 "id": r.id,
                 "patient_id": r.patient_id,
+                "document_id": r.document_id,
                 "exam_type": r.exam_type,
                 "exam_category": r.exam_category,
                 "display_name": display_name,
@@ -421,6 +422,9 @@ def get_patient_reports(patient_id):
                 "abnormal_count": sum(1 for x in r.results if x.abnormal_flag in ("H", "L", "A", "HH", "LL", "CRITICAL")),
                 "confidence_score": float(r.confidence_score) if r.confidence_score else None,
                 "performed_at": r.performed_at.isoformat() if r.performed_at else None,
+                "reported_at": r.reported_at.isoformat() if r.reported_at else None,
+                "created_at": r.created_at.isoformat() if r.created_at else None,
+                "updated_at": r.updated_at.isoformat() if r.updated_at else None,
                 "lab_name": r.lab_name,
                 "ordering_doctor": r.ordering_doctor,
                 # ── Narrative / imaging fields ──
@@ -444,6 +448,7 @@ def get_patient_reports(patient_id):
                 # ── Numeric results (lab/urine) ──
                 "results": [
                     {
+                        "id": x.id,
                         "display_name": x.display_name,
                         "value_numeric": float(x.value_numeric) if x.value_numeric is not None else None,
                         "value_text": x.value_text,
@@ -454,6 +459,8 @@ def get_patient_reports(patient_id):
                         "abnormal_flag": x.abnormal_flag,
                         "trendable": x.trendable,
                         "clinical_group": x.clinical_group,
+                        "measurement_at": x.measurement_at.isoformat() if x.measurement_at else None,
+                        "parser_confidence": float(x.parser_confidence) if x.parser_confidence is not None else None,
                         # Semantic interpretation fields (v3.1)
                         "metric_kind": getattr(x, 'metric_kind', 'numeric_lab') or 'numeric_lab',
                         "semantic_direction": getattr(x, 'semantic_direction', 'bidirectional') or 'bidirectional',
@@ -466,6 +473,7 @@ def get_patient_reports(patient_id):
                 # ── Raw impressions (for backward compat + doctor dashboard) ──
                 "impressions": [
                     {
+                        "id": i.id,
                         "section_type": i.section_type,
                         "text": i.text,
                         "severity_flag": i.severity_flag,
