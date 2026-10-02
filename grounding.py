@@ -148,3 +148,109 @@ def manifest_contains_sensitive_values(manifest: dict[str, Any], forbidden_value
     """Test helper: detect accidental leakage of supplied PHI strings."""
     serialized = repr(manifest)
     return any(value and value in serialized for value in forbidden_values)
+
+
+def build_context_fact_index(wp_context: dict[str, Any] | None) -> dict[str, Any]:
+    """Build a PHI-free structural index of authoritative medical context.
+
+    This is a read-model only. It does not persist or duplicate medical records.
+    It reports source families, record counts and temporal coverage where the
+    source already provides a date/timestamp.
+    """
+    ctx = wp_context if isinstance(wp_context, dict) else {}
+
+    def date_span(values: list[str]) -> dict[str, str] | None:
+        clean = sorted({v for v in values if isinstance(v, str) and v.strip()})
+        if not clean:
+            return None
+        return {"from": clean[0], "to": clean[-1]}
+
+    index: dict[str, Any] = {}
+
+    meds = ctx.get("medications")
+    if isinstance(meds, list):
+        dates = [
+            str(item.get("start_date"))
+            for item in meds
+            if isinstance(item, dict) and item.get("start_date")
+        ]
+        index["medications"] = {
+            "source": "ame",
+            "resource": "mm_medications",
+            "count": len(meds),
+            "coverage": date_span(dates),
+        }
+
+    today = ctx.get("today_doses")
+    if isinstance(today, dict) and isinstance(today.get("doses"), list):
+        doses = today["doses"]
+        dates = [
+            str(item.get("scheduled_local_date"))
+            for item in doses
+            if isinstance(item, dict) and item.get("scheduled_local_date")
+        ]
+        index["doses"] = {
+            "source": "ame",
+            "resource": "mm_doses",
+            "count": len(doses),
+            "coverage": date_span(dates),
+        }
+
+    analytics = ctx.get("longitudinal_checkin_analytics")
+    if isinstance(analytics, dict) and isinstance(analytics.get("recent_records"), list):
+        records = analytics["recent_records"]
+        dates = [
+            str(item.get("date"))
+            for item in records
+            if isinstance(item, dict) and item.get("date")
+        ]
+        index["checkins"] = {
+            "source": "autoa_checkins",
+            "resource": "daily_checkins",
+            "count": len(records),
+            "coverage": date_span(dates),
+        }
+
+    exam_results = ctx.get("structured_exam_results")
+    if isinstance(exam_results, list):
+        dates = [
+            str(item.get("test_date"))
+            for item in exam_results
+            if isinstance(item, dict) and item.get("test_date")
+        ]
+        index["exam_results"] = {
+            "source": "render_exams",
+            "resource": "structured_exam_results",
+            "count": len(exam_results),
+            "coverage": date_span(dates),
+        }
+
+    narrative = ctx.get("narrative_exam_context")
+    if isinstance(narrative, list):
+        dates = [
+            str(item.get("performed_at"))
+            for item in narrative
+            if isinstance(item, dict) and item.get("performed_at")
+        ]
+        index["exam_reports"] = {
+            "source": "render_exams",
+            "resource": "narrative_exam_context",
+            "count": len(narrative),
+            "coverage": date_span(dates),
+        }
+
+    documents = ctx.get("medical_document_context")
+    if isinstance(documents, list):
+        dates = [
+            str(item.get("date"))
+            for item in documents
+            if isinstance(item, dict) and item.get("date")
+        ]
+        index["medical_documents"] = {
+            "source": "render_documents",
+            "resource": "medical_document_context",
+            "count": len(documents),
+            "coverage": date_span(dates),
+        }
+
+    return index
