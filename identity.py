@@ -7,8 +7,8 @@ import base64
 import hmac
 import hashlib
 import json
-import os
 import time
+from environment import SETTINGS
 from typing import Tuple, Dict, Any, Optional
 
 
@@ -66,10 +66,8 @@ def verify_identity_token(
         - payload_dict: Decoded payload if valid, None otherwise
         - error_code: Error code string if invalid, None otherwise
     """
-    # Get shared secret from environment
-    secret = os.environ.get("AUTOANOSIS_IDENTITY_SECRET", "")
-    if not secret:
-        return False, None, "missing_server_secret"
+    # Shared secret is validated at process start by the environment contract.
+    secret = SETTINGS.identity_secret
 
     # Check token format
     if not token or "." not in token:

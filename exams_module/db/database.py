@@ -1,16 +1,16 @@
 """
 Autoanosis Exams Module — Database Session Factory
-Supports PostgreSQL (Neon/Supabase, production) and SQLite (local dev).
-DATABASE_URL env var controls which backend is used.
+Supports PostgreSQL for staging/production and SQLite only for explicit local development.
+The fail-closed environment contract supplies the canonical DATABASE_URL.
 """
-import os
+from environment import SETTINGS
 from sqlalchemy import create_engine
 from sqlalchemy.orm import sessionmaker
 
 # ---------------------------------------------------------------------------
 # Connection URL — falls back to local SQLite for local dev / CI
 # ---------------------------------------------------------------------------
-_RAW_URL = os.environ.get("DATABASE_URL", "sqlite:///./autoanosis_exams.db")
+_RAW_URL = SETTINGS.database_url
 
 # asyncpg URLs are not compatible with psycopg2 — rewrite driver scheme
 if _RAW_URL.startswith("postgresql+asyncpg://"):

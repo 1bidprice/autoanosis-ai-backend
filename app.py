@@ -39,6 +39,7 @@ from datetime import datetime
 from zoneinfo import ZoneInfo
 from flask import Flask, request, jsonify, send_file
 from flask_cors import CORS
+from environment import SETTINGS
 from openai import OpenAI
 from identity import verify_identity_token
 from ocr_endpoint import ocr_bp
@@ -187,7 +188,7 @@ except Exception as _mig_err:
 
 CORS(app, resources={
     r"/*": {
-        "origins": ["https://autoanosis.com", "https://www.autoanosis.com"],
+        "origins": list(SETTINGS.allowed_origins),
         "methods": ["GET", "POST", "OPTIONS"],
         "allow_headers": ["Content-Type", "X-User-ID", "X-Autoa-Proxy-TS", "X-Autoa-Proxy-Nonce", "X-Autoa-Proxy-Sig", "X-Identity-Token", "X-Admin-Secret"],
         "supports_credentials": True
@@ -202,14 +203,20 @@ openai_client = None
 def get_openai_client():
     global openai_client
     if openai_client is None:
-        openai_client = OpenAI(api_key=os.environ.get("OPENAI_API_KEY"))
+        openai_client = OpenAI(api_key=os.environ["OPENAI_API_KEY"])
     return openai_client
 
 # ---------------------------------------------------------------------------
 # Configuration
 # ---------------------------------------------------------------------------
-AUTOA_PROXY_SECRET = os.environ.get("AUTOA_AI_PROXY_SECRET", "").strip()
+AUTOA_PROXY_SECRET = SETTINGS.proxy_secret
 PROXY_TS_TOLERANCE = 300  # 5 minutes
+
+def _admin_authorized(candidate: str) -> bool:
+    """Timing-safe admin secret verification with no built-in fallback secret."""
+    if not candidate:
+        return False
+    return _hmac.compare_digest(str(candidate), SETTINGS.admin_secret)
 
 # ---------------------------------------------------------------------------
 # Rate limiting (in-memory)
@@ -1642,7 +1649,12 @@ def health_check():
             "exam_review_queue",
         ],
         "config": {
+            "environment": SETTINGS.environment,
+            "allowed_origins": list(SETTINGS.allowed_origins),
             "proxy_secret_configured": bool(AUTOA_PROXY_SECRET),
+            "identity_secret_configured": bool(SETTINGS.identity_secret),
+            "admin_secret_configured": bool(SETTINGS.admin_secret),
+            "database_backend": "sqlite" if SETTINGS.database_url.startswith("sqlite") else "postgresql",
             "max_tokens": 4000,
         }
     }), 200
@@ -1897,8 +1909,7 @@ def recalculate_abnormal_flags():
     """One-time migration: recalculate H/L/N flags for all ExamResult records."""
     data = request.get_json(silent=True) or {}
     secret = request.headers.get('X-Admin-Secret') or data.get('secret', '')
-    admin_secret = os.environ.get('ADMIN_SECRET', 'autoanosis-admin-2026')
-    if secret != admin_secret:
+    if not _admin_authorized(secret):
         return jsonify({"error": "Unauthorized"}), 401
     try:
         from exams_module.db.database import SessionLocal
@@ -1939,8 +1950,7 @@ if __name__ == "__main__":
 def admin_list_documents():
     """Debug: list all ExamDocuments for a patient."""
     secret = request.headers.get('X-Admin-Secret', '')
-    admin_secret = os.environ.get('ADMIN_SECRET', 'autoanosis-admin-2026')
-    if secret != admin_secret:
+    if not _admin_authorized(secret):
         return jsonify({"error": "Unauthorized"}), 401
     patient_id = request.args.get('patient_id', type=int)
     if not patient_id:
@@ -1961,8 +1971,7 @@ def admin_clear_duplicate():
     """Force-mark a document as deleted to allow re-upload."""
     data = request.get_json(silent=True) or {}
     secret = request.headers.get('X-Admin-Secret') or data.get('secret', '')
-    admin_secret = os.environ.get('ADMIN_SECRET', 'autoanosis-admin-2026')
-    if secret != admin_secret:
+    if not _admin_authorized(secret):
         return jsonify({"error": "Unauthorized"}), 401
     sha256 = data.get('sha256')
     patient_id = data.get('patient_id')
@@ -1996,8 +2005,7 @@ def fix_orphaned_documents():
     """
     data = request.get_json(silent=True) or {}
     secret = request.headers.get('X-Admin-Secret') or data.get('secret', '')
-    admin_secret = os.environ.get('ADMIN_SECRET', 'autoanosis-admin-2026')
-    if secret != admin_secret:
+    if not _admin_authorized(secret):
         return jsonify({"error": "Unauthorized"}), 401
     dry_run = data.get('dry_run', False)
     try:
