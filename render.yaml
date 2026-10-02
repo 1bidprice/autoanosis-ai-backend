@@ -7,6 +7,11 @@ services:
       pip install -r requirements.txt
     startCommand: gunicorn --timeout 300 --workers 2 --bind 0.0.0.0:$PORT app:app
     envVars:
+      # Explicit deployment boundary. Never infer staging/production from the branch name.
+      - key: AUTOANOSIS_ENV
+        sync: false
+      - key: AUTOANOSIS_ALLOWED_ORIGINS
+        sync: false
       - key: OPENAI_API_KEY
         sync: false
       - key: PYTHON_VERSION
@@ -29,6 +34,9 @@ services:
       # Must match the AUTOA_ROLE_SYNC_SECRET constant in the WPCode role-sync snippet.
       # Generate with: python3 -c "import secrets; print(secrets.token_hex(32))"
       - key: AUTOA_ROLE_SYNC_SECRET
+        sync: false
+      # Admin-only maintenance endpoints: no source-code fallback is permitted.
+      - key: ADMIN_SECRET
         sync: false
       # AUTOA_ROLE_CACHE_TTL: seconds a pushed role entry is valid (default: 300)
       - key: AUTOA_ROLE_CACHE_TTL
