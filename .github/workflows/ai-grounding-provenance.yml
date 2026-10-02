@@ -1,0 +1,50 @@
+name: Autoanosis AI Grounding Provenance
+
+on:
+  push:
+    branches:
+      - "feature/ai-grounding-provenance-v1"
+  pull_request:
+    branches:
+      - "hardening/staging-ai-contract-v1"
+      - main
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  provenance:
+    runs-on: ubuntu-latest
+    env:
+      AUTOANOSIS_ENV: development
+      AUTOANOSIS_ALLOWED_ORIGINS: https://development.autoanosis.invalid
+      DATABASE_URL: sqlite:///./autoanosis_exams.db
+      OPENAI_API_KEY: test-openai
+      AUTOA_AI_PROXY_SECRET: test-proxy
+      AUTOANOSIS_IDENTITY_SECRET: test-identity
+      AUTOA_ROLE_SYNC_SECRET: test-role
+      ADMIN_SECRET: test-admin
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+      - name: Compile provenance code
+        run: |
+          python -m py_compile grounding.py
+          python -m py_compile app.py
+      - name: Run provenance privacy tests
+        run: python -m unittest tests.test_grounding_manifest -v
+      - name: Enforce structural-only response contract
+        shell: bash
+        run: |
+          set -euo pipefail
+          grep -F '"grounding": grounding' app.py
+          grep -F '"context_source"' grounding.py
+          grep -F '"sections"' grounding.py
+          grep -F '"context_bytes"' grounding.py
+          if grep -E '"(medication_name|dosage|value|notes|document_title|extracted_text)"' grounding.py; then
+            echo "Grounding manifest must not serialize medical values."
+            exit 1
+          fi
