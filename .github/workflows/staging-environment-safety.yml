@@ -1,0 +1,40 @@
+name: Autoanosis Backend Environment Safety
+
+on:
+  push:
+    branches:
+      - "hardening/staging-ai-contract-v1"
+  pull_request:
+    branches:
+      - main
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  contract:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+      - name: Compile touched Python
+        run: |
+          python -m py_compile environment.py
+          python -m py_compile identity.py
+          python -m py_compile exams_module/db/database.py
+          python -m py_compile app.py
+      - name: Validate fail-closed environment matrix
+        run: python scripts/ci/validate_environment_contract.py
+      - name: Reject source-code admin secret fallback
+        shell: bash
+        run: |
+          set -euo pipefail
+          if grep -R "autoanosis-admin-2026" . --exclude-dir=.git; then
+            echo "Hardcoded admin secret fallback is forbidden."
+            exit 1
+          fi
+          grep -F "origins\": list(SETTINGS.allowed_origins)" app.py
+          grep -F "_RAW_URL = SETTINGS.database_url" exams_module/db/database.py
